@@ -192,6 +192,7 @@ class GmailIntakeResponse(BaseModel):
     received_at: datetime
     snippet: Optional[str] = None
     attachment_name: Optional[str] = None
+    attachment_content: Optional[str] = None
     ai_status: str
     approval_status: str
     processed_project_id: Optional[str] = None

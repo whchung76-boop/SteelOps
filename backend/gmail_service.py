@@ -6,7 +6,10 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+SCOPES = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.send'
+]
 
 class GmailAuthRequiredException(Exception):
     """Exception raised when Gmail authorization is required."""
@@ -86,6 +89,86 @@ def get_gmail_service():
 
     return build('gmail', 'v1', credentials=creds)
 
+def get_attachment_content(message_id, filename, service=None):
+    """
+    Downloads the attachment from Gmail and extracts its content as a text string.
+    Supports Excel (.xlsx, .xls) and PDF (.pdf) formats.
+    """
+    import base64
+    import io
+    import pandas as pd
+    import PyPDF2
+    
+    if not service:
+        service = get_gmail_service()
+        
+    try:
+        # 1. Fetch message details to find the attachment_id
+        message = service.users().messages().get(userId='me', id=message_id).execute()
+        payload = message.get('payload', {})
+        
+        def find_attachment_id(parts_list, target_filename):
+            for part in parts_list:
+                if part.get('filename') == target_filename:
+                    return part.get('body', {}).get('attachmentId')
+                if part.get('parts'):
+                    found_id = find_attachment_id(part.get('parts'), target_filename)
+                    if found_id:
+                        return found_id
+            return None
+            
+        parts = payload.get('parts', [])
+        if not parts and 'body' in payload:
+            parts = [payload]
+            
+        attachment_id = find_attachment_id(parts, filename)
+        if not attachment_id:
+            print(f"[WARNING] Attachment '{filename}' not found in message {message_id}")
+            return ""
+            
+        # 2. Download the attachment bytes
+        attachment = service.users().messages().attachments().get(
+            userId='me', messageId=message_id, id=attachment_id
+        ).execute()
+        
+        data = attachment.get('data')
+        if not data:
+            return ""
+            
+        file_bytes = base64.urlsafe_b64decode(data.encode('UTF-8'))
+        
+        # 3. Parse content based on file extension
+        ext = os.path.splitext(filename)[1].lower()
+        text_content = ""
+        
+        if ext in ['.xlsx', '.xls']:
+            excel_file = io.BytesIO(file_bytes)
+            xls = pd.ExcelFile(excel_file)
+            sheets_text = []
+            for sheet_name in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet_name)
+                df_str = df.to_string(index=False, header=True)
+                sheets_text.append(f"--- Sheet: {sheet_name} ---\n{df_str}")
+            text_content = "\n\n".join(sheets_text)
+            
+        elif ext == '.pdf':
+            pdf_file = io.BytesIO(file_bytes)
+            reader = PyPDF2.PdfReader(pdf_file)
+            pages_text = []
+            for i, page in enumerate(reader.pages):
+                page_text = page.extract_text()
+                if page_text:
+                    pages_text.append(f"--- Page {i+1} ---\n{page_text}")
+            text_content = "\n\n".join(pages_text)
+        else:
+            text_content = file_bytes.decode('utf-8', errors='ignore')
+            
+        return text_content
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to parse attachment '{filename}' from msg {message_id}: {e}")
+        return f"Error parsing attachment {filename}: {str(e)}"
+
 def fetch_gmail_emails(max_results=10, page_token=None):
     """
     Fetches the latest email messages matching the query filter from the user's Gmail inbox.
@@ -156,6 +239,12 @@ def fetch_gmail_emails(max_results=10, page_token=None):
                 return None
                 
             attachment_name = find_attachment_filename(parts)
+            attachment_content = None
+            if attachment_name:
+                try:
+                    attachment_content = get_attachment_content(msg['id'], attachment_name, service)
+                except Exception as ex:
+                    print(f"[WARNING] Failed to fetch/parse attachment '{attachment_name}' for msg {msg['id']}: {ex}")
             
             email_list.append({
                 "message_id": msg['id'],
@@ -163,6 +252,7 @@ def fetch_gmail_emails(max_results=10, page_token=None):
                 "subject": subject,
                 "snippet": snippet,
                 "attachment_name": attachment_name,
+                "attachment_content": attachment_content,
                 "received_at": received_at
             })
             

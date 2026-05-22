@@ -89,6 +89,7 @@ class GmailIntake(Base):
     snippet = Column(String)
     
     attachment_name = Column(String)
+    attachment_content = Column(String, nullable=True)
     
     # Status
     ai_status = Column(String, default="PENDING") # PENDING, COMPLETED, FAILED

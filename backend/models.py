@@ -35,6 +35,7 @@ class Customer(Base):
     name = Column(String, nullable=False)
     contact_person = Column(String)
     contact_number = Column(String)
+    email = Column(String)
     
     tenant = relationship("Tenant", back_populates="customers")
     projects = relationship("Project", back_populates="customer")
@@ -52,6 +53,13 @@ class Project(Base):
     target_date = Column(DateTime)
     total_amount = Column(Numeric)
     margin_rate = Column(Numeric)
+    
+    # Commercial results
+    actual_quote_price = Column(Numeric) # 최종 견적 제출 금액
+    bid_price = Column(Numeric) # 최종 투찰 금액
+    competitor_name = Column(String) # 실주 시 낙찰 업체명
+    winning_price = Column(Numeric) # 경쟁사 낙찰 금액
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     
     tenant = relationship("Tenant", back_populates="projects")

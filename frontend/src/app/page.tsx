@@ -3,68 +3,316 @@
 import { useState, useEffect, useRef } from "react";
 
 // Types matching the backend schema
-interface ProjectSpec {
-  id?: string;
-  speed: string | null;
-  plc_type: string | null;
-  comm_type: string | null;
-  environment: string | null;
-}
-
-interface Customer {
-  id: string;
-  name: string;
-}
-
+interface ProjectSpec { speed: string | null; plc_type: string | null; comm_type: string | null; environment: string | null; }
+interface Customer { id: string; name: string; contact_person?: string; contact_number?: string; email?: string; }
 interface Project {
-  id?: string;
-  customer_id?: string;
-  title: string;
-  line_name: string | null;
-  steel_grade: string | null;
-  equipment_type: string | null;
-  status: string | null;
-  target_date: string | null;
-  total_amount: number | null;
-  margin_rate: number | null;
-  created_at?: string;
-  customer?: Customer | null;
-  specs: ProjectSpec | null;
+  id?: string; customer_id?: string; customer_name?: string; title: string; line_name: string | null; steel_grade: string | null;
+  equipment_type: string | null; status: string | null; target_date: string | null; total_amount: number | null;
+  margin_rate: number | null; created_at?: string; customer?: Customer | null; specs: ProjectSpec | null;
+  actual_quote_price?: number | null;
+  bid_price?: number | null;
+  competitor_name?: string | null;
+  winning_price?: number | null;
+}
+interface RiskAlert { message: string; acknowledged: boolean; }
+interface QuoteItem { name: string; specification: string; quantity: number; unit_price: number; total_price: number; }
+interface QuoteResponse { title: string; total_amount: number; items: QuoteItem[]; scope_of_supply: string[]; exclusions: string[]; conditions: string[]; }
+interface CallSummary { id: string; customer_name: string; inquiry_type: string; specs: string; predicted_equipment: string; todos: string[]; created_at: string; }
+interface VendorQuote { vendor_name: string; unit_price: number; delivery_days: number; notes: string; }
+interface VendorItem { item_name: string; quotes: VendorQuote[]; }
+interface VendorComparison { project_id: string; items: VendorItem[]; }
+
+// Custom SVG Chart Components
+function WeeklyTrendChart({ trends }: { trends: { week_label: string; amount: number }[] }) {
+  const maxAmount = Math.max(...trends.map(t => t.amount), 100000000); // 1억 baseline
+  const width = 500;
+  const height = 300;
+  const paddingLeft = 80;
+  const paddingRight = 30;
+  const paddingTop = 40;
+  const paddingBottom = 40;
+  
+  const chartWidth = width - paddingLeft - paddingRight;
+  const chartHeight = height - paddingTop - paddingBottom;
+  
+  const formatAmount = (amt: number) => {
+    if (amt >= 100000000) {
+      return (amt / 100000000).toFixed(1) + "억";
+    } else if (amt >= 10000) {
+      return (amt / 10000).toFixed(0) + "만";
+    }
+    return amt.toLocaleString();
+  };
+
+  const yDivisions = [0, maxAmount * 0.33, maxAmount * 0.66, maxAmount];
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full">
+      <defs>
+        <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#3b82f6" />
+          <stop offset="100%" stopColor="#1d4ed8" />
+        </linearGradient>
+      </defs>
+      
+      {yDivisions.map((val, idx) => {
+        const y = paddingTop + chartHeight - (val / maxAmount) * chartHeight;
+        return (
+          <g key={idx}>
+            <line x1={paddingLeft} y1={y} x2={width - paddingRight} y2={y} stroke="#e2e8f0" strokeDasharray="4 4" />
+            <text x={paddingLeft - 10} y={y + 3} textAnchor="end" className="text-[10px] font-medium text-slate-400 fill-current">
+              {formatAmount(val)}
+            </text>
+          </g>
+        );
+      })}
+      
+      {trends.map((item, idx) => {
+        const barWidth = 40;
+        const groupWidth = chartWidth / trends.length;
+        const x = paddingLeft + idx * groupWidth + (groupWidth - barWidth) / 2;
+        const barHeight = (item.amount / maxAmount) * chartHeight;
+        const y = paddingTop + chartHeight - barHeight;
+        
+        return (
+          <g key={idx} className="group">
+            <rect x={x} y={y} width={barWidth} height={Math.max(barHeight, 2)} fill="url(#barGradient)" rx="4" className="transition-all duration-300 hover:fill-blue-500 cursor-pointer" />
+            {item.amount > 0 && (
+              <text x={x + barWidth / 2} y={y - 14} textAnchor="middle" className="text-[10px] font-medium text-slate-500 fill-current">
+                {formatAmount(item.amount)}
+              </text>
+            )}
+            <text x={x + barWidth / 2} y={height - 15} textAnchor="middle" className="text-[10px] font-medium text-slate-500 fill-current">
+              {item.week_label}
+            </text>
+          </g>
+        );
+      })}
+      
+      <line x1={paddingLeft} y1={paddingTop + chartHeight} x2={width - paddingRight} y2={paddingTop + chartHeight} stroke="#cbd5e1" strokeWidth="1.5" />
+    </svg>
+  );
 }
 
-interface RiskAlert {
-  message: string;
-  acknowledged: boolean;
+function CustomerRatioChart({ ratios }: { ratios: { customer_name: string; won_count: number; lost_count: number }[] }) {
+  const displayRatios = ratios.slice(0, 5);
+  const maxCount = Math.max(...displayRatios.map(r => Math.max(r.won_count, r.lost_count)), 4);
+  const width = 500;
+  const height = 300;
+  const paddingLeft = 50;
+  const paddingRight = 30;
+  const paddingTop = 50;
+  const paddingBottom = 40;
+  
+  const chartWidth = width - paddingLeft - paddingRight;
+  const chartHeight = height - paddingTop - paddingBottom;
+  
+  const yDivisions = Array.from({ length: maxCount + 1 }, (_, i) => i);
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full">
+      <defs>
+        <linearGradient id="wonGradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#10b981" />
+          <stop offset="100%" stopColor="#059669" />
+        </linearGradient>
+        <linearGradient id="lostGradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#ef4444" />
+          <stop offset="100%" stopColor="#dc2626" />
+        </linearGradient>
+      </defs>
+
+      <g transform="translate(360, 20)">
+        <rect x="0" y="1" width="7" height="7" fill="url(#wonGradient)" rx="1.5" />
+        <text x="12" y="8" className="text-[9px] font-medium text-slate-400 fill-current">수주</text>
+        <rect x="45" y="1" width="7" height="7" fill="url(#lostGradient)" rx="1.5" />
+        <text x="57" y="8" className="text-[9px] font-medium text-slate-400 fill-current">실주</text>
+      </g>
+      
+      {yDivisions.map((val, idx) => {
+        const y = paddingTop + chartHeight - (val / maxCount) * chartHeight;
+        return (
+          <g key={idx}>
+            <line x1={paddingLeft} y1={y} x2={width - paddingRight} y2={y} stroke="#e2e8f0" strokeDasharray="4 4" />
+            <text x={paddingLeft - 10} y={y + 3} textAnchor="end" className="text-[10px] font-medium text-slate-400 fill-current">
+              {val}건
+            </text>
+          </g>
+        );
+      })}
+      
+      {displayRatios.map((item, idx) => {
+        const groupWidth = chartWidth / displayRatios.length;
+        const paddingBetweenGroups = 20;
+        const availableWidth = groupWidth - paddingBetweenGroups;
+        const barWidth = availableWidth / 2 - 2;
+        const groupX = paddingLeft + idx * groupWidth + paddingBetweenGroups / 2;
+        
+        const wonX = groupX;
+        const wonHeight = (item.won_count / maxCount) * chartHeight;
+        const wonY = paddingTop + chartHeight - wonHeight;
+        
+        const lostX = groupX + barWidth + 4;
+        const lostHeight = (item.lost_count / maxCount) * chartHeight;
+        const lostY = paddingTop + chartHeight - lostHeight;
+        
+        return (
+          <g key={idx}>
+            <rect x={wonX} y={wonY} width={barWidth} height={Math.max(wonHeight, 2)} fill="url(#wonGradient)" rx="3" className="transition-all duration-300 hover:opacity-90 cursor-pointer" />
+            {item.won_count > 0 && (
+              <text x={wonX + barWidth / 2} y={wonY - 14} textAnchor="middle" className="text-[10px] font-medium text-emerald-600 fill-current">
+                {item.won_count}
+              </text>
+            )}
+
+            <rect x={lostX} y={lostY} width={barWidth} height={Math.max(lostHeight, 2)} fill="url(#lostGradient)" rx="3" className="transition-all duration-300 hover:opacity-90 cursor-pointer" />
+            {item.lost_count > 0 && (
+              <text x={lostX + barWidth / 2} y={lostY - 14} textAnchor="middle" className="text-[10px] font-medium text-red-500 fill-current">
+                {item.lost_count}
+              </text>
+            )}
+
+            <text x={groupX + availableWidth / 2} y={height - 15} textAnchor="middle" className="text-[10px] font-medium text-slate-500 fill-current">
+              {item.customer_name}
+            </text>
+          </g>
+        );
+      })}
+      
+      <line x1={paddingLeft} y1={paddingTop + chartHeight} x2={width - paddingRight} y2={paddingTop + chartHeight} stroke="#cbd5e1" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+// Helper to convert number string to Korean Won representation
+function convertToKoreanWon(valStr: string): string {
+  const cleanStr = valStr.replace(/[^0-9]/g, "");
+  if (!cleanStr) return "";
+  const num = parseInt(cleanStr, 10);
+  if (num === 0) return "영 원";
+
+  const koreanNumbers = ["", "일", "이", "삼", "사", "오", "육", "칠", "팔", "구"];
+  const units = ["", "십", "백", "천"];
+  const bigUnits = ["", "만", "억", "조", "경"];
+
+  let result = "";
+  const len = cleanStr.length;
+
+  for (let i = 0; i < len; i++) {
+    const digit = parseInt(cleanStr[i], 10);
+    const position = len - 1 - i; // 0-indexed position from right
+    const unitPos = position % 4;
+    const bigUnitPos = Math.floor(position / 4);
+
+    if (digit !== 0) {
+      result += koreanNumbers[digit] + units[unitPos];
+    }
+
+    // Add big unit (만, 억, 조...) at the boundary (every 4 digits)
+    if (unitPos === 0) {
+      // Check if the current 4-digit chunk has any non-zero digit
+      const startIdx = Math.max(0, i - 3);
+      const chunk = cleanStr.slice(startIdx, i + 1);
+      if (parseInt(chunk, 10) > 0) {
+        result += bigUnits[bigUnitPos] + " ";
+      }
+    }
+  }
+
+  const formatted = result.trim().replace(/\s+/g, " ");
+  return formatted ? `일금 ${formatted}원정` : "";
 }
 
 export default function Home() {
+  const [currentView, setCurrentView] = useState<"inquiry" | "tech_review" | "quote_bidding" | "project_db" | "dashboard">("inquiry");
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // Filters
+  // Customer CRM state
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerContactPerson, setNewCustomerContactPerson] = useState("");
+  const [newCustomerContactNumber, setNewCustomerContactNumber] = useState("");
+  const [newCustomerEmail, setNewCustomerEmail] = useState("");
+  const [isRegisteringCustomer, setIsRegisteringCustomer] = useState(false);
+  
   const [statusFilter, setStatusFilter] = useState("");
   const [keywordFilter, setKeywordFilter] = useState("");
   const [equipmentFilter, setEquipmentFilter] = useState<string[]>([]);
   const [steelGradeFilter, setSteelGradeFilter] = useState<string[]>([]);
   
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  
+  // Tab State
+  const [activeTab, setActiveTab] = useState<"specs" | "vendor">("specs");
+  const [vendorData, setVendorData] = useState<VendorComparison | null>(null);
 
-  // Modal State
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [modalStep, setModalStep] = useState<1 | 2 | 3>(1);
+  // Quote Modal State
+  const [isQuoteModalOpen, setIsQuoteModalOpen] = useState(false);
+  const [modalStep, setModalStep] = useState<1 | 2 | 3 | 4>(1);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
   const [riskAlerts, setRiskAlerts] = useState<RiskAlert[]>([]);
+  const [recommendedProjects, setRecommendedProjects] = useState<Project[]>([]);
+  const [quoteData, setQuoteData] = useState<QuoteResponse | null>(null);
+  const [aiAnalysisResult, setAiAnalysisResult] = useState<any>(null);
   
-  // Draft Data for New Project
-  const [draftProject, setDraftProject] = useState<Partial<Project>>({
-    title: "", line_name: "", steel_grade: "", equipment_type: "", customer_id: ""
-  });
-  const [draftSpecs, setDraftSpecs] = useState<Partial<ProjectSpec>>({
-    speed: "", plc_type: "", comm_type: "", environment: ""
-  });
+  const [draftProject, setDraftProject] = useState<Partial<Project>>({title: "", line_name: "", steel_grade: "", equipment_type: "", customer_id: "", customer_name: "", status: "검토중"});
+  const [draftSpecs, setDraftSpecs] = useState<Partial<ProjectSpec>>({speed: "", plc_type: "", comm_type: "", environment: ""});
+  const [equipmentTypes, setEquipmentTypes] = useState<string[]>([]);
+
+  // Commercial Results Form States
+  const [statusInput, setStatusInput] = useState<string>("검토중");
+  const [actualQuoteInput, setActualQuoteInput] = useState<string>("");
+  const [bidInput, setBidInput] = useState<string>("");
+  const [competitorInput, setCompetitorInput] = useState<string>("");
+  const [winningPriceInput, setWinningPriceInput] = useState<string>("");
+  const [isSavingResults, setIsSavingResults] = useState(false);
+
+  // Editing project states
+  const [isEditing, setIsEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editCustomerName, setEditCustomerName] = useState("");
+  const [editLineName, setEditLineName] = useState("");
+  const [editSteelGrade, setEditSteelGrade] = useState("");
+  const [editEquipmentType, setEditEquipmentType] = useState("");
+  const [editTotalAmount, setEditTotalAmount] = useState("");
+  const [editMarginRate, setEditMarginRate] = useState("");
+  const [editSpeed, setEditSpeed] = useState("");
+  const [editPlcType, setEditPlcType] = useState("");
+  const [editCommType, setEditCommType] = useState("");
+  const [editEnvironment, setEditEnvironment] = useState("");
+
+  // Helper for formatting and setting money inputs
+  const handleMoneyInputChange = (setter: (val: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawVal = e.target.value.replace(/[^0-9]/g, "");
+    if (!rawVal) {
+      setter("");
+    } else {
+      setter(parseInt(rawVal, 10).toLocaleString());
+    }
+  };
+
+  // Dashboard Stats State
+  interface WeeklyTrendItem { week_label: string; amount: number; }
+  interface CustomerRatioItem { customer_name: string; won_count: number; lost_count: number; }
+  interface DashboardStats {
+    submitted_quotes_count: number;
+    winning_rate: number;
+    time_saved_hours: number;
+    avg_margin_rate: number;
+    weekly_trends: WeeklyTrendItem[];
+    customer_ratios: CustomerRatioItem[];
+  }
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
+
+  // Phone-to-Task State
+  const [isPhoneModalOpen, setIsPhoneModalOpen] = useState(false);
+  const [phoneText, setPhoneText] = useState("");
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [todayTasks, setTodayTasks] = useState<CallSummary[]>([]);
 
   const fetchProjects = async () => {
     setLoading(true);
@@ -74,505 +322,2036 @@ export default function Home() {
       if (keywordFilter) url.searchParams.append("keyword", keywordFilter);
       equipmentFilter.forEach(eq => url.searchParams.append("equipment_type", eq));
       steelGradeFilter.forEach(sg => url.searchParams.append("steel_grade", sg));
-      
       const res = await fetch(url.toString());
-      if (!res.ok) throw new Error("Failed to fetch");
-      const data = await res.json();
-      setProjects(data);
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setLoading(false);
-    }
+      if (res.ok) setProjects(await res.json());
+    } finally { setLoading(false); }
   };
 
   const fetchCustomers = async () => {
+    const res = await fetch("http://localhost:8000/api/customers/");
+    if (res.ok) setCustomers(await res.json());
+  };
+
+  const registerCustomer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCustomerName.trim()) return alert("고객사명을 입력해 주세요.");
+    setIsRegisteringCustomer(true);
     try {
-      const res = await fetch("http://localhost:8000/api/customers/");
+      const res = await fetch("http://localhost:8000/api/customers/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newCustomerName,
+          contact_person: newCustomerContactPerson || null,
+          contact_number: newCustomerContactNumber || null,
+          email: newCustomerEmail || null,
+        }),
+      });
       if (res.ok) {
-        const data = await res.json();
-        setCustomers(data);
+        alert("고객사가 성공적으로 등록되었습니다.");
+        setNewCustomerName("");
+        setNewCustomerContactPerson("");
+        setNewCustomerContactNumber("");
+        setNewCustomerEmail("");
+        await fetchCustomers(); // Refresh customer list
+      } else {
+        alert("고객사 등록 실패");
       }
-    } catch (e) {
-      console.error(e);
+    } catch (err) {
+      console.error(err);
+      alert("고객사 등록 중 오류가 발생했습니다.");
+    } finally {
+      setIsRegisteringCustomer(false);
     }
   };
 
-  useEffect(() => {
-    fetchProjects();
-    fetchCustomers();
+  const fetchEquipmentTypes = async () => {
+    try {
+      const res = await fetch("http://localhost:8000/api/projects/equipment-types");
+      if (res.ok) setEquipmentTypes(await res.json());
+    } catch (err) {
+      console.error("Error fetching equipment types:", err);
+    }
+  };
+
+  const fetchDashboardStats = async () => {
+    try {
+      const res = await fetch("http://localhost:8000/api/dashboard/stats");
+      if (res.ok) setDashboardStats(await res.json());
+    } catch (err) {
+      console.error("Error fetching dashboard stats:", err);
+    }
+  };
+
+  useEffect(() => { 
+    fetchProjects(); 
+    fetchCustomers(); 
+    fetchEquipmentTypes();
+    fetchDashboardStats();
   }, [statusFilter, equipmentFilter, steelGradeFilter]);
 
-  // Handle Object URL memory leak
+  useEffect(() => {
+    if (currentView === "dashboard") {
+      fetchDashboardStats();
+    }
+  }, [currentView]);
+
+  useEffect(() => {
+    if (selectedProject) {
+      setStatusInput(selectedProject.status || "검토중");
+      setActualQuoteInput(
+        selectedProject.actual_quote_price !== null && selectedProject.actual_quote_price !== undefined
+          ? selectedProject.actual_quote_price.toLocaleString()
+          : (selectedProject.total_amount !== null && selectedProject.total_amount !== undefined ? selectedProject.total_amount.toLocaleString() : "")
+      );
+      setBidInput(selectedProject.bid_price !== null && selectedProject.bid_price !== undefined ? selectedProject.bid_price.toLocaleString() : "");
+      setCompetitorInput(selectedProject.competitor_name || "");
+      setWinningPriceInput(selectedProject.winning_price !== null && selectedProject.winning_price !== undefined ? selectedProject.winning_price.toLocaleString() : "");
+      
+      // Initialize edit fields
+      setEditTitle(selectedProject.title || "");
+      setEditCustomerName(selectedProject.customer?.name || "");
+      setEditLineName(selectedProject.line_name || "");
+      setEditSteelGrade(selectedProject.steel_grade || "");
+      setEditEquipmentType(selectedProject.equipment_type || "");
+      setEditTotalAmount(selectedProject.total_amount ? selectedProject.total_amount.toLocaleString() : "");
+      setEditMarginRate(selectedProject.margin_rate ? selectedProject.margin_rate.toString() : "");
+      
+      setEditSpeed(selectedProject.specs?.speed || "");
+      setEditPlcType(selectedProject.specs?.plc_type || "");
+      setEditCommType(selectedProject.specs?.comm_type || "");
+      setEditEnvironment(selectedProject.specs?.environment || "");
+      
+      setIsEditing(false); // Default to read-only when project changes
+    }
+  }, [selectedProject]);
+
   useEffect(() => {
     if (uploadedFile) {
       const url = URL.createObjectURL(uploadedFile);
       setFilePreviewUrl(url);
       return () => URL.revokeObjectURL(url);
-    } else {
-      setFilePreviewUrl(null);
-    }
+    } else setFilePreviewUrl(null);
   }, [uploadedFile]);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    fetchProjects();
-  };
-
-  const toggleFilter = (setFilter: React.Dispatch<React.SetStateAction<string[]>>, filterList: string[], value: string) => {
-    if (filterList.includes(value)) {
-      setFilter(filterList.filter(item => item !== value));
-    } else {
-      setFilter([...filterList, value]);
+  useEffect(() => {
+    if (selectedProject && activeTab === "vendor") {
+      fetch(`http://localhost:8000/api/vendors/compare/${selectedProject.id}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => setVendorData(d));
     }
-  };
+  }, [selectedProject, activeTab]);
 
+  const toggleFilter = (setF: any, fList: string[], val: string) => fList.includes(val) ? setF(fList.filter(i => i !== val)) : setF([...fList, val]);
   const getStatusColor = (status: string | null) => {
     switch (status) {
       case "수주": return "bg-green-100 text-green-800 border-green-200";
       case "견적제출": return "bg-blue-100 text-blue-800 border-blue-200";
       case "실주": return "bg-red-100 text-red-800 border-red-200";
-      case "검토중": return "bg-gray-100 text-gray-800 border-gray-200";
       default: return "bg-gray-100 text-gray-800 border-gray-200";
     }
   };
 
-  // --- Modal Logic ---
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setUploadedFile(e.target.files[0]);
-    }
-  };
-
-  const toggleRiskAlert = (index: number) => {
-    setRiskAlerts(prev => prev.map((alert, i) => i === index ? { ...alert, acknowledged: !alert.acknowledged } : alert));
-  };
-
   const startAIAnalysis = async () => {
-    if (!uploadedFile) {
-      alert("사양서 파일을 업로드해주세요.");
-      return;
+    if (!uploadedFile || !draftProject.customer_name || !draftProject.equipment_type) {
+      return alert("발주처, 설비 종류 및 사양서 파일을 모두 입력/업로드해주세요.");
     }
-    if (!draftProject.customer_id) {
-      alert("고객사를 선택해주세요.");
-      return;
-    }
-    
-    setModalStep(2); // Loading state
-
-    const formData = new FormData();
+    setIsQuoteModalOpen(true);
+    setModalStep(2);
+    const formData = new FormData(); 
     formData.append("file", uploadedFile);
-
+    formData.append("customer", draftProject.customer_name);
+    formData.append("equipment_type", draftProject.equipment_type);
     try {
-      const res = await fetch("http://localhost:8000/api/projects/upload", {
-        method: "POST",
-        body: formData,
+      const res = await fetch("http://localhost:8000/api/projects/upload", { method: "POST", body: formData });
+      if (res.ok) {
+        const data = await res.json();
+        setAiAnalysisResult(data);
+        setDraftProject(p => ({ 
+          ...p, 
+          title: data.title || p.title, 
+          line_name: data.line_name || p.line_name, 
+          steel_grade: data.steel_grade || p.steel_grade, 
+          equipment_type: data.equipment_type || p.equipment_type 
+        }));
+        setDraftSpecs({ speed: data.speed, plc_type: data.plc_type, comm_type: data.comm_type, environment: data.environment });
+        setRiskAlerts((data.risk_alerts || []).map((m: string) => ({ message: m, acknowledged: false })));
+        
+        const recRes = await fetch("http://localhost:8000/api/projects/recommend", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ customer_id: draftProject.customer_id || null, equipment_type: data.equipment_type, plc_type: data.plc_type })
+        });
+        if (recRes.ok) setRecommendedProjects(await recRes.json());
+        setModalStep(3);
+      } else {
+        alert("분석 오류");
+        setIsQuoteModalOpen(false);
+        setModalStep(1);
+      }
+    } catch { 
+      alert("분석 오류"); 
+      setIsQuoteModalOpen(false); 
+      setModalStep(1); 
+    }
+  };
+
+  const generateQuote = async () => {
+    if (riskAlerts.some(a => !a.acknowledged)) return alert("모든 리스크 경고를 확인해야 합니다.");
+    try {
+      const res = await fetch("http://localhost:8000/api/quotes/generate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customer_id: draftProject.customer_id || null, equipment_type: draftProject.equipment_type, plc_type: draftSpecs.plc_type })
       });
       if (res.ok) {
         const data = await res.json();
-        setDraftProject(prev => ({
-          ...prev,
-          title: data.title || prev.title,
-          line_name: data.line_name || prev.line_name,
-          steel_grade: data.steel_grade || prev.steel_grade,
-          equipment_type: data.equipment_type || prev.equipment_type
-        }));
-        setDraftSpecs({
-          speed: data.speed,
-          plc_type: data.plc_type,
-          comm_type: data.comm_type,
-          environment: data.environment
-        });
-        const alerts = data.risk_alerts || [];
-        setRiskAlerts(alerts.map((msg: string) => ({ message: msg, acknowledged: false })));
-        setModalStep(3); // Result Form state
+        setQuoteData(data);
+        const finalPrice = aiAnalysisResult?.optimal_quote_price || data.total_amount;
+        setDraftProject(p => ({ ...p, total_amount: finalPrice, margin_rate: 25 }));
+        setModalStep(4);
       }
-    } catch (e) {
-      console.error(e);
-      alert("AI 분석 중 오류가 발생했습니다.");
-      setModalStep(1);
-    }
+    } catch { alert("견적 생성 오류"); }
   };
 
   const saveProject = async () => {
-    const unacknowledged = riskAlerts.filter(a => !a.acknowledged);
-    if (unacknowledged.length > 0) {
-      alert("모든 리스크 경고를 확인(체크)해야 저장이 가능합니다.");
-      return;
-    }
+    const payload = { ...draftProject, specs: draftSpecs };
+    const res = await fetch("http://localhost:8000/api/projects/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (res.ok) {
+      setIsQuoteModalOpen(false); setModalStep(1); setUploadedFile(null);
+      setDraftProject({title: "", line_name: "", steel_grade: "", equipment_type: "", customer_id: "", customer_name: "", status: "검토중"});
+      setDraftSpecs({speed: "", plc_type: "", comm_type: "", environment: ""}); setRiskAlerts([]); setQuoteData(null);
+      setAiAnalysisResult(null);
+      fetchProjects();
+      fetchEquipmentTypes();
+    } else alert("저장 실패");
+  };
 
+  const handleDeleteProject = async (projectId?: string) => {
+    if (!projectId) return;
+    if (!confirm("정말 이 프로젝트를 삭제하시겠습니까?\n삭제 후에는 복구할 수 없습니다.")) return;
     try {
-      const payload = { ...draftProject, specs: draftSpecs };
-      const res = await fetch("http://localhost:8000/api/projects/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
+      const res = await fetch(`http://localhost:8000/api/projects/${projectId}`, { method: "DELETE" });
       if (res.ok) {
-        setIsModalOpen(false);
-        setModalStep(1);
-        setUploadedFile(null);
-        setDraftProject({title: "", line_name: "", steel_grade: "", equipment_type: "", customer_id: ""});
-        setDraftSpecs({speed: "", plc_type: "", comm_type: "", environment: ""});
-        setRiskAlerts([]);
+        setSelectedProject(null);
         fetchProjects();
+        fetchEquipmentTypes();
+        fetchDashboardStats();
       } else {
-        alert("저장 실패");
+        alert("삭제에 실패했습니다.");
       }
-    } catch (e) {
-      console.error(e);
-      alert("저장 중 오류");
+    } catch (err) {
+      alert("삭제 중 오류가 발생했습니다.");
     }
   };
 
-  const selectedCustomerName = customers.find(c => c.id === draftProject.customer_id)?.name;
+  const saveProjectModifications = async () => {
+    if (!selectedProject?.id) return;
+    try {
+      const payload = {
+        title: editTitle,
+        customer_name: editCustomerName,
+        line_name: editLineName,
+        steel_grade: editSteelGrade,
+        equipment_type: editEquipmentType,
+        total_amount: editTotalAmount ? parseFloat(editTotalAmount.replace(/,/g, "")) : null,
+        margin_rate: editMarginRate ? parseFloat(editMarginRate) : null,
+        specs: {
+          speed: editSpeed,
+          plc_type: editPlcType,
+          comm_type: editCommType,
+          environment: editEnvironment
+        }
+      };
+      const res = await fetch(`http://localhost:8000/api/projects/${selectedProject.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const updatedProject = await res.json();
+        setSelectedProject(updatedProject);
+        await fetchProjects();
+        await fetchDashboardStats();
+        setIsEditing(false);
+        alert("프로젝트가 성공적으로 수정되었습니다.");
+      } else {
+        alert("수정 저장 실패");
+      }
+    } catch (err) {
+      console.error("Error updating project:", err);
+      alert("오류 발생");
+    }
+  };
+
+
+  const saveCommercialResults = async () => {
+    if (!selectedProject?.id) return;
+    setIsSavingResults(true);
+    try {
+      const payload = {
+        status: statusInput,
+        actual_quote_price: actualQuoteInput ? parseFloat(actualQuoteInput.replace(/,/g, "")) : null,
+        bid_price: bidInput ? parseFloat(bidInput.replace(/,/g, "")) : null,
+        competitor_name: statusInput === "실주" ? competitorInput : null,
+        winning_price: statusInput === "실주" && winningPriceInput ? parseFloat(winningPriceInput.replace(/,/g, "")) : null,
+      };
+      const res = await fetch(`http://localhost:8000/api/projects/${selectedProject.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const updatedProject = await res.json();
+        setSelectedProject(updatedProject);
+        await fetchProjects();
+        await fetchDashboardStats();
+        alert("상업적 결과가 성공적으로 기록되었습니다.");
+      } else {
+        alert("저장 실패");
+      }
+    } catch (err) {
+      console.error("Error saving results:", err);
+      alert("오류 발생");
+    } finally {
+      setIsSavingResults(false);
+    }
+  };
+
+  const fillMockPhoneText = () => {
+    setPhoneText(
+      "현대제철 당진의 김과장입니다. 노후 마킹기 교체 건으로 서보 및 PLC(Profinet) 최신형 제어반 견적 요청합니다. 고속 마킹이 필요하고 현장에 분진이 다소 발생하는 환경입니다."
+    );
+  };
+
+  const handlePhoneSubmit = async () => {
+    if (!phoneText.trim()) return;
+    setIsSummarizing(true);
+    try {
+      const res = await fetch("http://localhost:8000/api/calls/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: phoneText }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTodayTasks(prev => [data, ...prev]);
+        setPhoneText("");
+      } else {
+        alert("유선 문의 요약 분석에 실패했습니다.");
+      }
+    } catch (err) {
+      console.error("Error summarizing call:", err);
+      alert("서버 연결에 실패했습니다.");
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
 
   return (
-    <div className="flex h-full relative">
-      <div className={`flex-1 p-6 flex flex-col transition-all duration-300 ${selectedProject ? 'mr-[40rem]' : ''}`}>
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-slate-800">프로젝트 견적 이력</h2>
+    <div className="flex h-screen w-screen overflow-hidden bg-slate-50 text-slate-800 font-sans">
+      {/* Left Sidebar */}
+      <aside className="w-68 bg-slate-900 text-white flex flex-col shrink-0 shadow-xl border-r border-slate-800 z-20">
+        {/* Sidebar Header */}
+        <div className="p-6 border-b border-slate-800 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="text-lg font-black tracking-wider text-white">SteelOps</span>
+            <span className="bg-blue-600 text-white text-[9px] px-1.5 py-0.5 rounded font-black tracking-wider uppercase">Sales ERP</span>
+          </div>
+          <span className="text-[10px] text-slate-400 block mt-1.5 font-medium tracking-wide">자동화장비 영업 운영 플랫폼</span>
+        </div>
+        
+        {/* Navigation Menus */}
+        <nav className="flex-1 px-3 py-6 space-y-1.5 overflow-y-auto">
           <button 
-            onClick={() => setIsModalOpen(true)}
-            className="bg-slate-900 text-white px-5 py-2.5 rounded-md hover:bg-slate-800 transition font-medium shadow-sm flex items-center gap-2"
+            onClick={() => { setCurrentView('inquiry'); setSelectedProject(null); }} 
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold transition-all text-left ${currentView === 'inquiry' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-            신규 견적 등록 (AI 분석)
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
+            영업접수
           </button>
+          
+          <button 
+            onClick={() => { setCurrentView('tech_review'); setSelectedProject(null); }} 
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold transition-all text-left ${currentView === 'tech_review' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+          >
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+            기술검토
+          </button>
+          
+          <button 
+            onClick={() => { setCurrentView('quote_bidding'); setSelectedProject(null); }} 
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold transition-all text-left ${currentView === 'quote_bidding' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+          >
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+            견적/입찰
+          </button>
+          
+          <button 
+            onClick={() => { setCurrentView('project_db'); setSelectedProject(null); }} 
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold transition-all text-left ${currentView === 'project_db' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+          >
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" /></svg>
+            프로젝트DB
+          </button>
+          
+          <button 
+            onClick={() => { setCurrentView('dashboard'); setSelectedProject(null); }} 
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold transition-all text-left ${currentView === 'dashboard' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+          >
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+            대시보드
+          </button>
+        </nav>
+        
+        {/* Sidebar Footer */}
+        <div className="p-4 border-t border-slate-850 bg-slate-950/40 text-center shrink-0 flex items-center justify-center gap-2">
+          <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+          <span className="text-[10px] text-slate-500 font-bold">수석비서 보좌 모드 활성</span>
         </div>
+      </aside>
 
-        <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 mb-6 space-y-4">
-          <form onSubmit={handleSearch} className="flex items-end gap-4">
-            <div className="flex-1">
-              <label className="block text-sm font-medium text-slate-700 mb-1">통합 검색어</label>
-              <input type="text" placeholder="프로젝트명, 라인명 검색..." className="w-full border-slate-300 rounded-md shadow-sm border p-2 focus:ring-blue-500 focus:border-blue-500" value={keywordFilter} onChange={(e) => setKeywordFilter(e.target.value)} />
+      {/* Right Content Pane Layout */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-slate-50">
+        
+        {/* Top Header & Process Step Indicator */}
+        <header className="bg-white border-b border-slate-200 h-16 flex items-center px-8 shrink-0 justify-between z-10 shadow-sm">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">
+              {currentView === 'inquiry' && "📞 영업 접수 및 고객사 CRM"}
+              {currentView === 'tech_review' && "⚙️ AI 사양서 검토 & 분석 센터"}
+              {currentView === 'quote_bidding' && "📄 견적산정 및 상업 입찰 업무"}
+              {currentView === 'project_db' && "🗄️ 프로젝트 통합 데이터베이스"}
+              {currentView === 'dashboard' && "📊 영업 통계 대시보드"}
+            </h2>
+          </div>
+          
+          {/* Sales Operations Workflow Progress Tracker */}
+          <div className="flex items-center gap-4 text-[10px] font-bold text-slate-400 select-none">
+            <div className={`flex items-center gap-1.5 transition-all ${currentView === 'inquiry' ? 'text-blue-600 font-black' : ''}`}>
+              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] transition-all ${currentView === 'inquiry' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-400'}`}>1</span>
+              영업 접수
             </div>
-            <div className="w-48">
-              <label className="block text-sm font-medium text-slate-700 mb-1">상태 필터</label>
-              <select className="w-full border-slate-300 rounded-md shadow-sm border p-2 focus:ring-blue-500 focus:border-blue-500 bg-white" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                <option value="">전체 상태</option>
-                <option value="검토중">검토중</option>
-                <option value="견적제출">견적제출</option>
-                <option value="수주">수주</option>
-                <option value="실주">실주</option>
-              </select>
+            <svg className="w-3 h-3 text-slate-300" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" /></svg>
+            
+            <div className={`flex items-center gap-1.5 transition-all ${currentView === 'tech_review' ? 'text-blue-600 font-black' : ''}`}>
+              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] transition-all ${currentView === 'tech_review' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-400'}`}>2</span>
+              기술 검토
             </div>
-            <button type="submit" className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 transition font-medium shadow-sm h-[42px]">검색</button>
-          </form>
-
-          <div className="grid grid-cols-2 gap-6 pt-3 border-t border-slate-100">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">설비 종류 다중 선택</label>
-              <div className="flex gap-2 flex-wrap">
-                {["마킹기", "밴딩기", "결속기", "비전검사기"].map(eq => (
-                  <button key={eq} type="button" onClick={() => toggleFilter(setEquipmentFilter, equipmentFilter, eq)} className={`px-3 py-1 text-sm rounded-full border transition ${equipmentFilter.includes(eq) ? 'bg-blue-100 border-blue-400 text-blue-800 font-semibold' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
-                    {eq}
-                  </button>
-                ))}
-              </div>
+            <svg className="w-3 h-3 text-slate-300" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" /></svg>
+            
+            <div className={`flex items-center gap-1.5 transition-all ${currentView === 'quote_bidding' ? 'text-blue-600 font-black' : ''}`}>
+              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] transition-all ${currentView === 'quote_bidding' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-400'}`}>3</span>
+              견적/입찰
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">적용 강종 다중 선택</label>
-              <div className="flex gap-2 flex-wrap">
-                {["열연", "냉연", "후판", "도금", "선재"].map(sg => (
-                  <button key={sg} type="button" onClick={() => toggleFilter(setSteelGradeFilter, steelGradeFilter, sg)} className={`px-3 py-1 text-sm rounded-full border transition ${steelGradeFilter.includes(sg) ? 'bg-slate-800 border-slate-800 text-white font-semibold' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
-                    {sg}
-                  </button>
-                ))}
-              </div>
+            <svg className="w-3 h-3 text-slate-300" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" /></svg>
+            
+            <div className={`flex items-center gap-1.5 transition-all ${currentView === 'project_db' ? 'text-blue-600 font-black' : ''}`}>
+              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] transition-all ${currentView === 'project_db' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-100 text-slate-400'}`}>4</span>
+              수주/이력화
             </div>
           </div>
-        </div>
+        </header>
 
-        <div className="bg-white rounded-lg shadow-sm border border-slate-200 flex-1 overflow-hidden flex flex-col">
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-slate-200">
-              <thead className="bg-slate-50 sticky top-0 z-0">
-                <tr>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">상태</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">견적일</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">고객사 / 라인명</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">프로젝트명</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">주요 사양</th>
-                  <th scope="col" className="px-6 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">총 견적가</th>
-                  <th scope="col" className="px-6 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">마진율</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-slate-200">
-                {loading ? (
-                  <tr><td colSpan={7} className="px-6 py-10 text-center text-slate-500">데이터를 불러오는 중입니다...</td></tr>
-                ) : projects.length === 0 ? (
-                  <tr><td colSpan={7} className="px-6 py-10 text-center text-slate-500">검색 결과가 없습니다.</td></tr>
-                ) : (
-                  projects.map((p) => {
-                    const isLowMargin = p.margin_rate !== null && p.margin_rate < 20;
-                    return (
-                      <tr key={p.id} onClick={() => setSelectedProject(p)} className={`cursor-pointer transition ${isLowMargin ? 'bg-red-50/50 hover:bg-red-50' : 'hover:bg-blue-50'} ${selectedProject?.id === p.id ? 'bg-blue-50 ring-inset ring-2 ring-blue-500' : ''}`}>
-                        <td className="px-6 py-4 whitespace-nowrap"><span className={`px-2.5 py-1 inline-flex text-xs leading-5 font-semibold rounded-full border ${getStatusColor(p.status)}`}>{p.status}</span></td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">{p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-800"><div className="font-medium">{p.customer?.name}</div><div className="text-slate-500 text-xs">{p.line_name}</div></td>
-                        <td className="px-6 py-4 text-sm font-semibold text-slate-900">{p.title}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600"><div className="flex gap-2 items-center"><span className="bg-slate-100 px-2 py-0.5 rounded text-xs">{p.equipment_type}</span><span className="text-slate-400">|</span><span>{p.steel_grade}</span></div></td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-900 text-right font-medium">{p.total_amount ? `₩ ${p.total_amount.toLocaleString()}` : '-'}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right"><span className={`font-bold flex items-center justify-end gap-1 ${isLowMargin ? 'text-red-600' : 'text-slate-700'}`}>{isLowMargin && <span title="적정 마진율 미달">⚠️</span>}{p.margin_rate ? `${p.margin_rate}%` : '-'}</span></td>
+        {/* Scrollable Work Container */}
+        <div className="flex-1 overflow-y-auto p-8 relative">
+          
+          {/* 1. 영업접수 View */}
+          {currentView === 'inquiry' && (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 items-start text-left">
+              {/* Left Panel: Phone Inquiry and Tasks */}
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
+                <div className="flex justify-between items-center border-b pb-4">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                      <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
+                      유선 영업 문의 접수 (STT)
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">유선 통화 내용을 AI 보좌관이 분석하여 영업 업무 카드로 자동 변환합니다.</p>
+                  </div>
+                </div>
+                
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">녹취록 또는 통화 요약 직접 입력</label>
+                    <textarea 
+                      rows={5} 
+                      className="w-full border border-slate-200 rounded-lg p-3.5 text-xs focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 leading-relaxed bg-slate-50/30" 
+                      placeholder="예: 현대제철 당진의 김과장입니다. 노후 마킹기 교체 건으로 서보 및 PLC(Profinet) 최신형 제어반 견적 요청합니다..."
+                      value={phoneText} 
+                      onChange={e => setPhoneText(e.target.value)}
+                    ></textarea>
+                  </div>
+                  <div className="flex flex-col sm:flex-row justify-between gap-3 pt-1">
+                    <button onClick={fillMockPhoneText} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-md text-xs font-bold transition">
+                      💡 가상 통화 시나리오 자동 로드
+                    </button>
+                    <button 
+                      onClick={handlePhoneSubmit} 
+                      disabled={isSummarizing || !phoneText} 
+                      className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md text-xs transition disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-md"
+                    >
+                      {isSummarizing ? (
+                        <>
+                          <div className="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full"></div>
+                          분석 중...
+                        </>
+                      ) : '영업 업무 카드로 변환 (AI)'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Recents Phone logs */}
+                <div className="space-y-4 pt-4 border-t border-slate-100">
+                  <h4 className="text-sm font-bold text-slate-700">오늘의 접수된 영업 업무 ({todayTasks.length}건)</h4>
+                  {todayTasks.length === 0 ? (
+                    <div className="text-center py-8 bg-slate-50 rounded-lg border border-dashed border-slate-200 text-slate-400 text-xs">
+                      오늘 접수된 유선 문의 이력이 없습니다.
+                    </div>
+                  ) : (
+                    <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1">
+                      {todayTasks.map(t => (
+                        <div key={t.id} className="bg-slate-50 border border-slate-200 rounded-lg p-4 shadow-sm">
+                          <div className="flex justify-between items-start mb-2">
+                            <span className="font-bold text-slate-850 text-xs">{t.customer_name}</span>
+                            <span className="text-[10px] bg-blue-50 border border-blue-200 text-blue-800 px-2 py-0.5 rounded font-black">{t.inquiry_type}</span>
+                          </div>
+                          <div className="text-xs text-slate-600 mb-3 leading-relaxed">{t.specs}</div>
+                          <div className="text-[10px] font-bold text-slate-500 mb-1.5 uppercase">추천 할일 목록 (To-do List):</div>
+                          <ul className="text-[11px] space-y-1.5">
+                            {t.todos.map((todo, idx) => (
+                              <li key={idx} className="flex gap-2 items-start text-slate-700">
+                                <input type="checkbox" className="mt-0.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-3.5 w-3.5" />
+                                <span>{todo}</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <div className="mt-4 flex justify-between items-center pt-3 border-t border-slate-200/50">
+                            <span className="text-[9px] text-slate-400 font-mono">{t.created_at ? new Date(t.created_at).toLocaleTimeString() : ''}</span>
+                            <button 
+                              onClick={() => {
+                                setDraftProject(p => ({ ...p, customer_name: t.customer_name, equipment_type: t.predicted_equipment }));
+                                setCurrentView('tech_review');
+                              }}
+                              className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded hover:bg-slate-800 transition font-bold"
+                            >
+                              기술 검토 연계하기 →
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right Panel: Customer CRM Management */}
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
+                <div className="flex justify-between items-center border-b pb-4">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                      <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                      고객사 명부 관리 (CRM)
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">플랫폼에 등록된 주요 발주처 정보입니다. 신규 고객사를 직접 등록할 수 있습니다.</p>
+                  </div>
+                </div>
+
+                {/* Add New Customer Form */}
+                <form onSubmit={registerCustomer} className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
+                  <h4 className="text-xs font-bold text-slate-700">신규 고객사 직접 등록</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 mb-1">고객사명 *</label>
+                      <input 
+                        type="text" 
+                        required
+                        placeholder="예: 포스코케미칼"
+                        className="w-full border border-slate-200 h-8 px-2.5 rounded text-xs bg-white focus:ring-1 focus:ring-blue-500 outline-none text-slate-800"
+                        value={newCustomerName}
+                        onChange={e => setNewCustomerName(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 mb-1">담당자 성함</label>
+                      <input 
+                        type="text" 
+                        placeholder="예: 이대리"
+                        className="w-full border border-slate-200 h-8 px-2.5 rounded text-xs bg-white focus:ring-1 focus:ring-blue-500 outline-none text-slate-800"
+                        value={newCustomerContactPerson}
+                        onChange={e => setNewCustomerContactPerson(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 mb-1">담당자 연락처</label>
+                      <input 
+                        type="text" 
+                        placeholder="예: 010-1234-5678"
+                        className="w-full border border-slate-200 h-8 px-2.5 rounded text-xs bg-white focus:ring-1 focus:ring-blue-500 outline-none text-slate-800"
+                        value={newCustomerContactNumber}
+                        onChange={e => setNewCustomerContactNumber(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 mb-1">이메일 주소</label>
+                      <input 
+                        type="email" 
+                        placeholder="예: contact@company.com"
+                        className="w-full border border-slate-200 h-8 px-2.5 rounded text-xs bg-white focus:ring-1 focus:ring-blue-500 outline-none text-slate-800"
+                        value={newCustomerEmail}
+                        onChange={e => setNewCustomerEmail(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <button 
+                      type="submit" 
+                      disabled={isRegisteringCustomer}
+                      className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-xs font-bold disabled:opacity-50 transition shadow-sm"
+                    >
+                      {isRegisteringCustomer ? '등록 중...' : '고객사 등록'}
+                    </button>
+                  </div>
+                </form>
+
+                {/* Customer List table/list */}
+                <div className="border border-slate-200 rounded-lg overflow-hidden bg-white max-h-[300px] overflow-y-auto">
+                  <table className="min-w-full divide-y divide-slate-100 text-xs">
+                    <thead className="bg-slate-50 text-slate-500 font-semibold sticky top-0">
+                      <tr>
+                        <th className="px-4 py-2.5 text-left">고객사ID</th>
+                        <th className="px-4 py-2.5 text-left">고객사명</th>
+                        <th className="px-4 py-2.5 text-left">담당자</th>
+                        <th className="px-4 py-2.5 text-left">연락처</th>
+                        <th className="px-4 py-2.5 text-left">이메일</th>
                       </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div className={`fixed top-16 right-0 bottom-0 w-[40rem] bg-white border-l border-slate-200 shadow-2xl transform transition-transform duration-300 ease-in-out z-10 overflow-y-auto ${selectedProject ? 'translate-x-0' : 'translate-x-full'}`}>
-        {selectedProject && (
-          <div className="p-8">
-            <div className="flex justify-between items-start mb-8">
-              <div>
-                <div className="text-sm font-semibold text-blue-600 uppercase tracking-wider mb-2">{selectedProject.customer?.name} - {selectedProject.line_name}</div>
-                <h2 className="text-2xl font-bold text-slate-900 leading-tight">{selectedProject.title}</h2>
-              </div>
-              <button onClick={() => setSelectedProject(null)} className="text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full p-2 transition">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-            </div>
-
-            <div className="space-y-8">
-              <div className="bg-slate-50 p-5 rounded-lg border border-slate-200">
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <div className="text-sm text-slate-500 mb-1">상태</div>
-                    <div className={`px-2 py-0.5 inline-flex text-xs font-semibold rounded-full border ${getStatusColor(selectedProject.status)}`}>{selectedProject.status}</div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-slate-500 mb-1">납기일</div>
-                    <div className="text-base font-medium text-slate-900">{selectedProject.target_date ? new Date(selectedProject.target_date).toLocaleDateString() : '미정'}</div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-slate-500 mb-1">총 견적가</div>
-                    <div className="text-lg font-bold text-blue-700">{selectedProject.total_amount ? `₩ ${selectedProject.total_amount.toLocaleString()}` : '-'}</div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-slate-500 mb-1">마진율</div>
-                    <div className={`text-lg font-bold flex items-center gap-1 ${selectedProject.margin_rate !== null && selectedProject.margin_rate < 20 ? 'text-red-600' : 'text-slate-900'}`}>
-                      {selectedProject.margin_rate !== null && selectedProject.margin_rate < 20 && <span>⚠️</span>}
-                      {selectedProject.margin_rate ? `${selectedProject.margin_rate}%` : '-'}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <h3 className="text-base font-bold text-slate-800 border-b border-slate-200 pb-2 mb-4 flex items-center gap-2">
-                  <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" /></svg>
-                  핵심 기술 사양 (Project Specs)
-                </h3>
-                <div className="space-y-4 bg-white border border-slate-100 rounded-lg p-5 shadow-sm">
-                  <div className="flex justify-between items-center py-2 border-b border-slate-50 border-dashed"><span className="text-slate-500 font-medium">생산 속도 (Line Speed)</span><span className="text-base font-semibold text-slate-900">{selectedProject.specs?.speed || 'N/A'}</span></div>
-                  <div className="flex justify-between items-center py-2 border-b border-slate-50 border-dashed"><span className="text-slate-500 font-medium">적용 강종</span><span className="text-base font-semibold text-slate-900">{selectedProject.steel_grade || 'N/A'}</span></div>
-                  <div className="flex justify-between items-center py-2 border-b border-slate-50 border-dashed"><span className="text-slate-500 font-medium">제어반 (PLC Type)</span><span className="text-base font-semibold text-slate-900">{selectedProject.specs?.plc_type || 'N/A'}</span></div>
-                  <div className="flex justify-between items-center py-2 border-b border-slate-50 border-dashed"><span className="text-slate-500 font-medium">통신 방식</span><span className="text-base font-semibold text-slate-900">{selectedProject.specs?.comm_type || 'N/A'}</span></div>
-                  <div className="flex justify-between items-center py-2 border-b border-slate-50 border-dashed"><span className="text-slate-500 font-medium">설치 환경 (리스크)</span><span className="text-base font-bold text-amber-600 bg-amber-50 px-3 py-1 rounded">{selectedProject.specs?.environment || 'N/A'}</span></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6">
-          <div className={`bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col transition-all duration-500 ${modalStep === 3 ? 'w-full max-w-7xl h-[85vh]' : 'w-[40rem] max-h-[85vh]'}`}>
-            
-            <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-white shrink-0">
-              <h3 className="text-xl font-bold text-slate-800 flex items-center gap-3">
-                <span className="bg-blue-600 text-white w-8 h-8 rounded-full flex items-center justify-center text-sm">{modalStep}</span>
-                신규 견적/프로젝트 등록 (AI 사양 분석)
-              </h3>
-              <button onClick={() => { setIsModalOpen(false); setModalStep(1); }} className="text-slate-400 hover:text-slate-600 transition">
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-            </div>
-            
-            <div className="flex-1 overflow-hidden flex flex-col">
-              {modalStep === 1 && (
-                <div className="p-8 space-y-6 overflow-y-auto">
-                  <div className="bg-blue-50 text-blue-800 p-4 rounded-lg text-sm flex gap-3">
-                    <svg className="w-5 h-5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    <p>고객사에서 받은 <strong>PDF 사양서</strong>를 업로드하시면 AI가 데이터를 추출합니다.</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">고객사 선택 (필수)</label>
-                    <select className="w-full border-slate-300 rounded-md shadow-sm border p-3 focus:ring-blue-500 bg-white" value={draftProject.customer_id || ""} onChange={(e) => setDraftProject({...draftProject, customer_id: e.target.value})}>
-                      <option value="">고객사를 선택해주세요</option>
-                      {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">사양서 파일 업로드</label>
-                    <div className="border-2 border-dashed border-slate-300 rounded-xl p-10 flex flex-col items-center justify-center text-center hover:bg-slate-50 hover:border-blue-400 transition cursor-pointer" onClick={() => fileInputRef.current?.click()}>
-                      <div className="bg-blue-100 text-blue-600 p-4 rounded-full mb-4">
-                        <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
-                      </div>
-                      <p className="font-bold text-slate-700 text-lg mb-1">{uploadedFile ? uploadedFile.name : "사양서 파일을 드래그 앤 드롭 하세요"}</p>
-                      <p className="text-slate-500 mb-4">또는 클릭하여 파일 선택 (PDF 권장)</p>
-                      <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileChange} accept=".pdf,image/*" />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {modalStep === 2 && (
-                <div className="flex-1 flex flex-col items-center justify-center p-20 space-y-6">
-                  <div className="animate-spin rounded-full h-16 w-16 border-4 border-slate-200 border-t-blue-600"></div>
-                  <h3 className="text-xl font-bold text-slate-800">AI 모델이 사양서를 분석 중입니다...</h3>
-                  <p className="text-slate-500 text-center">도면 기호, 소재 규격, 필수 요구사항을 판별하고 누락된 요소를 찾고 있습니다.<br/>(약 2~3초 소요)</p>
-                </div>
-              )}
-
-              {modalStep === 3 && (
-                <div className="flex flex-1 overflow-hidden">
-                  {/* Left: Split View File Preview */}
-                  <div className="w-1/2 bg-slate-100 border-r border-slate-200 p-4 flex flex-col">
-                    <h4 className="font-semibold text-slate-700 mb-2">원본 사양서 미리보기</h4>
-                    <div className="flex-1 bg-white border border-slate-300 rounded-md overflow-hidden shadow-inner flex items-center justify-center">
-                      {filePreviewUrl ? (
-                        uploadedFile?.type.includes('pdf') ? (
-                          <object data={filePreviewUrl} type="application/pdf" className="w-full h-full">
-                            <p className="text-center text-slate-500 p-4">PDF 미리보기를 지원하지 않는 브라우저입니다.</p>
-                          </object>
-                        ) : uploadedFile?.type.includes('image') ? (
-                          <img src={filePreviewUrl} alt="Preview" className="max-w-full max-h-full object-contain" />
-                        ) : (
-                          <div className="text-center text-slate-500 p-10">미리보기를 지원하지 않는 형식입니다.<br/>문서를 원본 앱에서 열어 참조하세요.</div>
-                        )
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-slate-700">
+                      {customers.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="text-center py-6 text-slate-400 italic">등록된 고객사 정보가 없습니다.</td>
+                        </tr>
                       ) : (
-                        <div className="text-slate-400">파일 미리보기 영역</div>
+                        customers.map(c => (
+                          <tr key={c.id} className="hover:bg-slate-50/50">
+                            <td className="px-4 py-2 font-mono text-[10px] text-slate-400">{c.id.slice(0, 8)}...</td>
+                            <td className="px-4 py-2 font-bold text-slate-900">{c.name}</td>
+                            <td className="px-4 py-2">{c.contact_person || '-'}</td>
+                            <td className="px-4 py-2 font-mono text-slate-600">{c.contact_number || '-'}</td>
+                            <td className="px-4 py-2 font-mono text-slate-600">{c.email || '-'}</td>
+                          </tr>
+                        ))
                       )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 2. 기술검토 View */}
+          {currentView === 'tech_review' && (
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 items-start text-left">
+              {/* Left Panel: Upload Specification for AI Analysis */}
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
+                <div className="border-b pb-4">
+                  <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                    <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                    자율주행 및 자동화 설비 사양서 업로드 (AI 분석)
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">장비 사양서 파일을 드래그 앤 드롭하여 업로드하면 AI가 제원을 자동으로 파싱합니다.</p>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">발주처 선택 (고객사)</label>
+                    <input
+                      type="text"
+                      list="customers-list-tech"
+                      placeholder="발주처명을 입력하세요 (예: 자율주행 주식회사)"
+                      className="w-full border border-slate-200 p-2.5 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 bg-white"
+                      value={draftProject.customer_name || ""}
+                      onChange={(e) => setDraftProject({ ...draftProject, customer_name: e.target.value })}
+                    />
+                    <datalist id="customers-list-tech">
+                      {customers.map(c => (
+                        <option key={c.id} value={c.name} />
+                      ))}
+                    </datalist>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">설비 (기계) 종류 입력</label>
+                    <input
+                      type="text"
+                      placeholder="설비 종류를 입력하세요 (예: 자율주행 로봇 플랫폼)"
+                      className="w-full border border-slate-200 p-2.5 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 bg-white"
+                      value={draftProject.equipment_type || ""}
+                      onChange={(e) => setDraftProject({ ...draftProject, equipment_type: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">사양서 파일</label>
+                    <div
+                      className="border-2 border-dashed border-slate-200 p-8 rounded-lg text-center cursor-pointer hover:bg-slate-50 transition-all bg-slate-50/50"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <p className="font-bold text-xs text-slate-655 mb-1">{uploadedFile ? uploadedFile.name : "사양서 드래그 앤 드롭 또는 클릭하여 업로드"}</p>
+                      <span className="text-[10px] text-slate-400">PDF, 도면 이미지 지원 (최대 10MB)</span>
+                      <input type="file" className="hidden" ref={fileInputRef} onChange={(e) => setUploadedFile(e.target.files?.[0] || null)} />
                     </div>
                   </div>
+                  
+                  <div className="pt-2">
+                    <button 
+                      onClick={startAIAnalysis} 
+                      className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition shadow-md flex items-center justify-center gap-1.5"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                      AI 사양서 분석 및 4단계 리포트 발행
+                    </button>
+                  </div>
+                </div>
+              </div>
 
-                  {/* Right: AI Result & Form */}
-                  <div className="w-1/2 p-6 overflow-y-auto bg-slate-50">
-                    <div className="space-y-6 max-w-2xl mx-auto">
-                      
-                      {/* Risk Alerts */}
-                      {riskAlerts.length > 0 && (
-                        <div className="bg-white border border-red-200 shadow-sm rounded-lg overflow-hidden">
-                          <div className="bg-red-50 border-b border-red-200 p-3">
-                            <h4 className="flex items-center text-red-800 font-bold text-sm">
-                              <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-                              치명적 리스크 자동 탐지 (필수 확인)
-                            </h4>
+              {/* Right Panel: Pending Tech Review Projects */}
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
+                <div className="border-b pb-4">
+                  <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                    <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                    기술 검토 진행 중인 프로젝트 ({projects.filter(p => p.status === '검토중').length}건)
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">현재 기술 검토가 진행 중이며 사양 보완 및 리스크 점검이 필요한 리스트입니다.</p>
+                </div>
+
+                <div className="space-y-4 max-h-[500px] overflow-y-auto pr-1">
+                  {projects.filter(p => p.status === '검토중').length === 0 ? (
+                    <div className="text-center py-12 text-slate-400 italic text-xs">
+                      현재 기술 검토 단계에 있는 프로젝트가 없습니다.
+                    </div>
+                  ) : (
+                    projects.filter(p => p.status === '검토중').map(p => (
+                      <div 
+                        key={p.id} 
+                        onClick={() => { setSelectedProject(p); setActiveTab("specs"); }}
+                        className={`p-4 rounded-xl border transition-all cursor-pointer text-left ${selectedProject?.id === p.id ? 'bg-blue-50/50 border-blue-300 ring-1 ring-blue-300' : 'bg-slate-50 hover:bg-slate-100/50 border-slate-200'}`}
+                      >
+                        <div className="flex justify-between items-start mb-2.5">
+                          <div className="min-w-0 flex-1 pr-2">
+                            <span className="text-[10px] text-blue-600 font-bold block mb-0.5">{p.customer?.name}</span>
+                            <h4 className="text-xs font-bold text-slate-900 truncate">{p.title}</h4>
                           </div>
-                          <div className="p-3">
-                            <ul className="space-y-2">
-                              {riskAlerts.map((alert, idx) => (
-                                <li key={idx} className={`flex items-start gap-3 p-2 rounded-md transition ${alert.acknowledged ? 'bg-slate-50 opacity-50' : 'bg-red-50/50'}`}>
-                                  <input 
-                                    type="checkbox" 
-                                    checked={alert.acknowledged} 
-                                    onChange={() => toggleRiskAlert(idx)}
-                                    className="mt-1 h-4 w-4 text-red-600 focus:ring-red-500 rounded cursor-pointer"
-                                  />
-                                  <span className={`text-sm ${alert.acknowledged ? 'text-slate-500 line-through' : 'text-red-700 font-medium'}`}>{alert.message}</span>
-                                </li>
-                              ))}
-                            </ul>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedProject(p);
+                                setIsEditing(true);
+                              }}
+                              title="수정"
+                              className="p-1 text-slate-400 hover:text-blue-650 hover:bg-slate-100 rounded transition"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                            </button>
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteProject(p.id);
+                              }}
+                              title="삭제"
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded transition"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                            <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[9px] rounded font-black shrink-0 ml-1">기술 검토중</span>
                           </div>
                         </div>
-                      )}
+                        
+                        <div className="bg-white p-3 rounded-lg border border-slate-200/60 space-y-1.5 text-xs text-slate-600">
+                          <div className="flex justify-between"><span className="text-slate-400 font-medium">설비종류</span><span className="font-semibold text-slate-800">{p.equipment_type || '-'}</span></div>
+                          <div className="flex justify-between"><span className="text-slate-400 font-medium">제어반 PLC</span><span className="font-semibold text-slate-800">{p.specs?.plc_type || '미기재 (추출 필요)'}</span></div>
+                          <div className="flex justify-between"><span className="text-slate-400 font-medium">주행환경</span><span className="font-bold text-amber-600">{p.specs?.environment || '미기재 (추출 필요)'}</span></div>
+                        </div>
 
-                      {/* Forms */}
-                      <div className="bg-white p-5 rounded-lg border border-slate-200 shadow-sm">
-                        <h4 className="font-semibold text-slate-800 mb-4 border-b pb-2">기본 정보 (AI 추출)</h4>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div className="col-span-2">
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">프로젝트명</label>
-                            <input className="w-full border border-slate-300 p-2.5 rounded-md text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500" value={draftProject.title || ""} onChange={e => setDraftProject({...draftProject, title: e.target.value})} />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">라인명</label>
-                            <input className="w-full border border-slate-300 p-2.5 rounded-md text-sm" value={draftProject.line_name || ""} onChange={e => setDraftProject({...draftProject, line_name: e.target.value})} />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">설비 종류</label>
-                            <input className="w-full border border-slate-300 p-2.5 rounded-md text-sm font-semibold text-blue-700" value={draftProject.equipment_type || ""} onChange={e => setDraftProject({...draftProject, equipment_type: e.target.value})} />
-                          </div>
-                          <div className="col-span-2">
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">적용 강종</label>
-                            <input className="w-full border border-slate-300 p-2.5 rounded-md text-sm" value={draftProject.steel_grade || ""} onChange={e => setDraftProject({...draftProject, steel_grade: e.target.value})} />
-                          </div>
+                        <div className="mt-3 flex justify-between items-center">
+                          <span className="text-[10px] text-slate-400 font-mono">접수일: {p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</span>
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedProject(p);
+                              setCurrentView('quote_bidding');
+                            }}
+                            className="text-[10px] font-bold text-indigo-650 hover:text-indigo-800 flex items-center gap-0.5"
+                          >
+                            견적 산정 단계로 이동 →
+                          </button>
                         </div>
                       </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
-                      <div className="bg-white p-5 rounded-lg border border-slate-200 shadow-sm">
-                        <h4 className="font-semibold text-slate-800 mb-4 border-b pb-2">상세 기술 요구사항</h4>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">생산 속도</label>
-                            <input className="w-full border border-slate-300 p-2.5 rounded-md text-sm" value={draftSpecs.speed || ""} onChange={e => setDraftSpecs({...draftSpecs, speed: e.target.value})} />
+          {/* 3. 견적/입찰 View */}
+          {currentView === 'quote_bidding' && (
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-8 items-start text-left">
+              {/* Left Column: List of Projects for Pricing */}
+              <div className="xl:col-span-1 bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
+                <div className="border-b pb-4">
+                  <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                    <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+                    견적 대상 프로젝트 선택
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">상업적 결과를 입력하거나 정밀 견적 시뮬레이션을 진행할 대상을 선택하십시오.</p>
+                </div>
+
+                <div className="space-y-4 max-h-[600px] overflow-y-auto pr-1">
+                  {projects.length === 0 ? (
+                    <div className="text-center py-12 text-slate-400 italic text-xs">
+                      현재 등록된 프로젝트가 없습니다.
+                    </div>
+                  ) : (
+                    projects.map(p => (
+                      <div 
+                        key={p.id} 
+                        onClick={() => { setSelectedProject(p); setActiveTab("specs"); }}
+                        className={`p-4 rounded-xl border transition-all cursor-pointer ${selectedProject?.id === p.id ? 'bg-blue-50/50 border-blue-300 ring-1 ring-blue-300' : 'bg-slate-50 hover:bg-slate-100/50 border-slate-200'}`}
+                      >
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="min-w-0 flex-1 pr-2">
+                            <span className="text-[10px] text-blue-600 font-bold block mb-0.5">{p.customer?.name}</span>
+                            <h4 className="text-xs font-bold text-slate-900 leading-tight truncate">{p.title}</h4>
                           </div>
-                          <div>
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">설치 환경</label>
-                            <input className="w-full border border-slate-300 p-2.5 rounded-md text-sm" value={draftSpecs.environment || ""} onChange={e => setDraftSpecs({...draftSpecs, environment: e.target.value})} />
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedProject(p);
+                                setIsEditing(true);
+                              }}
+                              title="수정"
+                              className="p-1 text-slate-400 hover:text-blue-655 hover:bg-slate-100 rounded transition"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                            </button>
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteProject(p.id);
+                              }}
+                              title="삭제"
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded transition"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                            <span className={`px-2 py-0.5 text-[9px] rounded font-black border shrink-0 ml-1 ${getStatusColor(p.status)}`}>{p.status}</span>
                           </div>
-                          <div className="col-span-2">
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">PLC 및 제어반 규격</label>
-                            <input className={`w-full border p-2.5 rounded-md text-sm ${draftSpecs.plc_type?.includes('미기재') ? 'border-red-400 bg-red-50 text-red-700 font-semibold' : 'border-slate-300'}`} value={draftSpecs.plc_type || ""} onChange={e => setDraftSpecs({...draftSpecs, plc_type: e.target.value})} />
-                          </div>
-                          <div className="col-span-2">
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">통신 방식</label>
-                            <input className={`w-full border p-2.5 rounded-md text-sm ${draftSpecs.comm_type?.includes('미기재') ? 'border-red-400 bg-red-50 text-red-700 font-semibold' : 'border-slate-300'}`} value={draftSpecs.comm_type || ""} onChange={e => setDraftSpecs({...draftSpecs, comm_type: e.target.value})} />
-                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[10px] bg-white p-2 rounded border border-slate-200/50 text-slate-500">
+                          <div>AI 추천가: <span className="font-mono font-bold text-slate-700">{p.total_amount ? `₩${p.total_amount.toLocaleString()}` : '-'}</span></div>
+                          <div>실제 견적: <span className="font-mono font-bold text-blue-700">{p.actual_quote_price ? `₩${p.actual_quote_price.toLocaleString()}` : '-'}</span></div>
                         </div>
                       </div>
+                    ))
+                  )}
+                </div>
+              </div>
 
-                      {/* Data Hint Component */}
-                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-start gap-4">
-                        <div className="bg-blue-100 p-2 rounded-full text-blue-600 shrink-0">
-                          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                        </div>
+              {/* Center and Right Columns: Pricing Workspace */}
+              <div className="xl:col-span-2 space-y-8">
+                {!selectedProject ? (
+                  <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-12 text-center flex flex-col items-center justify-center min-h-[400px]">
+                    <svg className="w-16 h-16 text-slate-300 mb-4 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                    <h3 className="text-base font-bold text-slate-700">견적/입찰 업무 작업실</h3>
+                    <p className="text-xs text-slate-400 mt-1 max-w-sm">좌측 목록에서 프로젝트를 선택하시면 AI 견적서 초안, 협력사 매트릭스 비교, 수주/실주 등 상업적 결과 입력을 원스톱으로 처리할 수 있습니다.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {/* Workspace Card */}
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-6">
+                      <div className="flex justify-between items-center border-b pb-4">
                         <div>
-                          <h5 className="font-bold text-blue-800 mb-1 text-sm">유사 프로젝트 이력 힌트</h5>
-                          <p className="text-sm text-blue-700 mb-2">
-                            AI 분석 결과, <strong>{selectedCustomerName || "해당 고객사"}</strong>의 <strong>{draftProject.equipment_type || "유사 설비"}</strong> 구축 이력이 <span className="font-bold underline">2건</span> 발견되었습니다. 이전의 견적 단가와 마진율을 참고하여 견적을 작성하세요.
-                          </p>
-                          <button className="text-sm font-semibold text-blue-600 hover:text-blue-800 bg-white px-3 py-1.5 rounded border border-blue-200 shadow-sm transition">
-                            관련 과거 견적 보기 →
+                          <span className="text-xs text-blue-600 font-bold block">{selectedProject.customer?.name} 귀하</span>
+                          <h3 className="text-base font-bold text-slate-800">{selectedProject.title}</h3>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={generateQuote}
+                            className="px-3 py-1.5 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-md text-xs font-bold hover:bg-indigo-100 transition shadow-sm"
+                          >
+                            ⚙️ AI 견적서 초안 자동 빌드
                           </button>
                         </div>
                       </div>
 
+                      {/* Commercial Result Recording */}
+                      <div className="space-y-4">
+                        <h4 className="text-sm font-bold text-slate-700 flex items-center gap-1.5">
+                          <span className="w-1.5 h-4 bg-emerald-600 rounded-sm"></span>
+                          실제 상업적 결과 기록
+                        </h4>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-left">
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-500 mb-1.5">진행 상태</label>
+                            <select 
+                              className="w-full border border-slate-200 h-9 px-2.5 rounded-lg bg-white text-xs focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 font-medium"
+                              value={statusInput}
+                              onChange={(e) => setStatusInput(e.target.value)}
+                            >
+                              <option value="검토중">검토중</option>
+                              <option value="견적제출">견적제출</option>
+                              <option value="수주">수주</option>
+                              <option value="실주">실주</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-500 mb-1.5">최종 견적 제출 금액 (₩)</label>
+                            <input 
+                              type="text"
+                              className="w-full border border-slate-200 h-9 px-2.5 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 font-mono font-bold"
+                              placeholder="금액 입력"
+                              value={actualQuoteInput}
+                              onChange={handleMoneyInputChange(setActualQuoteInput)}
+                            />
+                            {actualQuoteInput && (
+                              <div className="text-[10px] text-slate-500 mt-1 font-semibold leading-tight">
+                                {convertToKoreanWon(actualQuoteInput)}
+                              </div>
+                            )}
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-500 mb-1.5">최종 투찰 금액 (₩)</label>
+                            <input 
+                              type="text"
+                              className="w-full border border-slate-200 h-9 px-2.5 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 font-mono font-bold"
+                              placeholder="금액 입력"
+                              value={bidInput}
+                              onChange={handleMoneyInputChange(setBidInput)}
+                            />
+                            {bidInput && (
+                              <div className="text-[10px] text-slate-500 mt-1 font-semibold leading-tight">
+                                {convertToKoreanWon(bidInput)}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {statusInput === "실주" && (
+                          <div className="p-4 bg-red-50/50 rounded-xl border border-red-100 space-y-3.5 animate-slide-down text-left">
+                            <h5 className="text-xs font-bold text-red-800">실주 분석 피드백 입력</h5>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-xs font-semibold text-red-700 mb-1">낙찰 경쟁사명</label>
+                                <input 
+                                  type="text"
+                                  className="w-full border border-red-200 h-9 px-2.5 rounded-lg text-xs focus:ring-2 focus:ring-red-500 outline-none text-slate-800"
+                                  placeholder="경쟁사 이름"
+                                  value={competitorInput}
+                                  onChange={(e) => setCompetitorInput(e.target.value)}
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-red-700 mb-1">경쟁사 낙찰가 (₩)</label>
+                                <input 
+                                  type="text"
+                                  className="w-full border border-red-200 h-9 px-2.5 rounded-lg text-xs focus:ring-2 focus:ring-red-500 outline-none text-slate-800 font-mono font-bold"
+                                  placeholder="금액 입력"
+                                  value={winningPriceInput}
+                                  onChange={handleMoneyInputChange(setWinningPriceInput)}
+                                />
+                                {winningPriceInput && (
+                                  <div className="text-[10px] text-red-700 mt-1 font-semibold leading-tight">
+                                    {convertToKoreanWon(winningPriceInput)}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="text-right">
+                          <button 
+                            onClick={saveCommercialResults}
+                            disabled={isSavingResults}
+                            className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold disabled:opacity-50 transition shadow-md"
+                          >
+                            {isSavingResults ? "저장 중..." : "✓ 상업적 결과 저장"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* AI Vendor Matrix Card */}
+                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-4">
+                      <h4 className="text-sm font-bold text-slate-700 flex items-center gap-1.5">
+                        <span className="w-1.5 h-4 bg-indigo-600 rounded-sm"></span>
+                        AI 협력사 단가 비교 매트릭스
+                      </h4>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full text-xs text-left">
+                          <thead>
+                            <tr className="bg-slate-50 text-slate-500 font-bold border-b">
+                              <th className="p-3">부품 품명</th>
+                              <th className="p-3">최저가 제안 협력사 (단가)</th>
+                              <th className="p-3 text-center">최단 납기 제안</th>
+                              <th className="p-3">비고</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 bg-white">
+                            <tr>
+                              <td className="p-3 font-semibold text-slate-800">주제어 PLC (Siemens S7-1500)</td>
+                              <td className="p-3 font-bold text-slate-900">B사 (직판) <span className="text-[10px] text-green-600 font-normal ml-1">₩11,500,000</span></td>
+                              <td className="p-3 text-center text-blue-700 font-bold">C사 (7일)</td>
+                              <td className="p-3 text-slate-400">재고 현황 실시간 모니터링 필요</td>
+                            </tr>
+                            <tr>
+                              <td className="p-3 font-semibold text-slate-800">서보 모터 & 드라이브 세트</td>
+                              <td className="p-3 font-bold text-slate-900">B사 <span className="text-[10px] text-green-600 font-normal ml-1">₩8,200,000</span></td>
+                              <td className="p-3 text-center text-blue-700 font-bold">C사 (10일)</td>
+                              <td className="p-3 text-slate-400">케이블 10m 별도 구매 요망</td>
+                            </tr>
+                            <tr>
+                              <td className="p-3 font-semibold text-slate-800">산업용 비전 카메라 (20M)</td>
+                              <td className="p-3 font-bold text-slate-900">E사 <span className="text-[10px] text-green-600 font-normal ml-1">₩4,800,000</span></td>
+                              <td className="p-3 text-center text-blue-700 font-bold">D사 (14일)</td>
+                              <td className="p-3 text-slate-400">조명 일체형 스펙 확인</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Quotation Preview Card */}
+                    {quoteData ? (
+                      <div className="bg-white rounded-xl shadow-md border border-slate-200 p-8 text-left space-y-6">
+                        <div className="flex justify-between items-start border-b pb-4">
+                          <div>
+                            <h4 className="text-base font-bold text-slate-800">공식 견적서 초안 (Quotation Preview)</h4>
+                            <p className="text-[10px] text-slate-400 mt-0.5">시스템에서 자동 생성된 품명별 단가 내역서입니다.</p>
+                          </div>
+                          <span className="text-[10px] px-2 py-0.5 bg-slate-100 border text-slate-600 rounded font-mono font-bold">표준 양식</span>
+                        </div>
+
+                        <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg flex justify-between items-center">
+                          <span className="text-xs text-slate-700 font-bold">총 공급가액 (VAT 별도):</span>
+                          <span className="text-xl font-black text-blue-700">₩{quoteData.total_amount.toLocaleString()}</span>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-xs text-left border-collapse border border-slate-100">
+                            <thead>
+                              <tr className="bg-slate-50 border-b">
+                                <th className="p-2 border-r">품명</th>
+                                <th className="p-2 border-r">규격 및 사양</th>
+                                <th className="p-2 text-center w-12 border-r">수량</th>
+                                <th className="p-2 text-right border-r">단가</th>
+                                <th className="p-2 text-right">합계</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {quoteData.items.map((it, idx) => (
+                                <tr key={idx}>
+                                  <td className="p-2 border-r font-bold text-slate-900">{it.name}</td>
+                                  <td className="p-2 border-r text-slate-500 font-normal">{it.specification}</td>
+                                  <td className="p-2 text-center border-r">{it.quantity}</td>
+                                  <td className="p-2 text-right border-r font-mono">₩{it.unit_price.toLocaleString()}</td>
+                                  <td className="p-2 text-right font-mono font-bold">₩{it.total_price.toLocaleString()}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bg-slate-50 border border-dashed rounded-xl p-8 text-center text-slate-400 text-xs">
+                        AI 견적서를 빌드하려면 상단의 "AI 견적서 초안 자동 빌드" 버튼을 클릭하십시오.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 4. 프로젝트DB View (Formerly Quote History Search) */}
+          {currentView === 'project_db' && (
+            <>
+              <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200 mb-6 space-y-4 shrink-0 text-left">
+                <form onSubmit={(e) => { e.preventDefault(); fetchProjects(); }} className="flex items-end gap-4">
+                  <div className="flex-1"><label className="block text-xs font-semibold text-slate-700 mb-1">통합 검색어</label><input type="text" placeholder="검색..." className="w-full border p-2 rounded-md text-xs focus:ring-1 focus:ring-blue-500 outline-none" value={keywordFilter} onChange={(e) => setKeywordFilter(e.target.value)} /></div>
+                  <div className="w-48"><label className="block text-xs font-semibold text-slate-700 mb-1">상태 필터</label><select className="w-full border p-2 rounded-md text-xs focus:ring-1 focus:ring-blue-500 outline-none bg-white" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}><option value="">전체 상태</option><option value="검토중">검토중</option><option value="견적제출">견적제출</option><option value="수주">수주</option><option value="실주">실주</option></select></div>
+                  <button type="submit" className="bg-blue-600 text-white px-6 py-2 rounded-md text-xs font-bold h-[38px] shadow-sm hover:bg-blue-700 transition">검색</button>
+                </form>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-3 border-t">
+                  <div>
+                    <label className="block text-xs font-semibold mb-2">설비 종류 다중 선택</label>
+                    <div className="flex gap-2 flex-wrap">
+                      {(equipmentTypes.length > 0 ? equipmentTypes : ["마킹기", "밴딩기", "결속기"]).map(eq => (
+                        <button
+                          key={eq}
+                          onClick={() => toggleFilter(setEquipmentFilter, equipmentFilter, eq)}
+                          className={`px-3 py-1 text-[10px] rounded-full border transition-all ${equipmentFilter.includes(eq) ? 'bg-blue-100 border-blue-400 font-bold text-blue-800' : 'bg-white'}`}
+                        >
+                          {eq}
+                        </button>
+                      ))}
                     </div>
                   </div>
+                  <div><label className="block text-xs font-semibold mb-2">적용 강종 다중 선택</label><div className="flex gap-2 flex-wrap">{["열연", "냉연", "후판"].map(sg => <button key={sg} onClick={() => toggleFilter(setSteelGradeFilter, steelGradeFilter, sg)} className={`px-3 py-1 text-[10px] rounded-full border transition-all ${steelGradeFilter.includes(sg) ? 'bg-slate-800 text-white border-slate-800 font-bold' : 'bg-white'}`}>{sg}</button>)}</div></div>
                 </div>
-              )}
-            </div>
+              </div>
 
-            <div className="p-5 border-t border-slate-200 bg-white flex justify-end gap-3 shrink-0">
-              <button onClick={() => { setIsModalOpen(false); setModalStep(1); }} className="px-5 py-2.5 text-slate-600 font-medium hover:bg-slate-100 rounded-md transition">
-                취소
+              <div className="bg-white rounded-lg shadow-sm border border-slate-200 flex-1 overflow-hidden flex flex-col">
+                <div className="overflow-y-auto">
+                  <table className="min-w-full divide-y divide-slate-200 text-left">
+                    <thead className="bg-slate-50 sticky top-0 z-0">
+                      <tr><th className="px-6 py-3 text-xs font-semibold text-slate-500 uppercase">상태</th><th className="px-6 py-3 text-xs font-semibold text-slate-500 uppercase">견적일</th><th className="px-6 py-3 text-xs font-semibold text-slate-500 uppercase">고객사</th><th className="px-6 py-3 text-xs font-semibold text-slate-500 uppercase">프로젝트명</th><th className="px-6 py-3 text-right text-xs font-semibold text-slate-500 uppercase">상업 금액 분석</th><th className="px-6 py-3 text-right text-xs font-semibold text-slate-500 uppercase">마진율</th><th className="px-6 py-3 text-right text-xs font-semibold text-slate-500 uppercase">관리</th></tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-slate-200">
+                      {loading ? <tr><td colSpan={7} className="text-center py-10 text-xs">로딩중...</td></tr> : 
+                        projects.map(p => {
+                          const lowMargin = p.margin_rate !== null && p.margin_rate < 20;
+                          return (
+                            <tr key={p.id} onClick={() => { setSelectedProject(p); setActiveTab("specs"); }} className={`cursor-pointer ${lowMargin ? 'bg-red-50/50 hover:bg-red-50' : 'hover:bg-blue-50'} ${selectedProject?.id === p.id ? 'bg-blue-50 ring-2 ring-inset ring-blue-500' : ''}`}>
+                              <td className="px-6 py-4"><span className={`px-2.5 py-1 text-[10px] rounded-full border ${getStatusColor(p.status)}`}>{p.status}</span></td>
+                              <td className="px-6 py-4 text-xs text-slate-600">{p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</td>
+                              <td className="px-6 py-4 text-xs"><div className="font-semibold">{p.customer?.name}</div></td>
+                              <td className="px-6 py-4 text-xs font-semibold">{p.title}</td>
+                              <td className="px-6 py-4 text-right">
+                                <div className="flex flex-col items-end text-[10px] space-y-0.5 font-medium">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-semibold shrink-0">🤖 AI추천</span>
+                                    <span className="text-slate-700 font-mono">{p.total_amount ? `${p.total_amount.toLocaleString()}원` : '-'}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-[9px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-semibold shrink-0">✍️ 실견적</span>
+                                    <span className="text-slate-800 font-bold font-mono">{p.actual_quote_price ? `${p.actual_quote_price.toLocaleString()}원` : '-'}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-[9px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded font-semibold shrink-0">🎯 입찰가</span>
+                                    <span className="text-indigo-900 font-bold font-mono">{p.bid_price ? `${p.bid_price.toLocaleString()}원` : '-'}</span>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className={`px-6 py-4 text-xs text-right font-bold ${lowMargin ? 'text-red-600' : ''}`}>{lowMargin && "⚠️"}{p.margin_rate ? `${p.margin_rate}%` : '-'}</td>
+                              <td className="px-6 py-4 text-right text-xs" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-end gap-1">
+                                  <button 
+                                    onClick={() => {
+                                      setSelectedProject(p);
+                                      setIsEditing(true);
+                                    }}
+                                    title="수정"
+                                    className="p-1 text-slate-400 hover:text-blue-650 hover:bg-slate-100 rounded transition"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                                  </button>
+                                  <button 
+                                    onClick={() => handleDeleteProject(p.id)}
+                                    title="삭제"
+                                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded transition"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* 5. 대시보드 View */}
+          {currentView === 'dashboard' && (
+            <div className="flex-1 flex flex-col gap-6 w-full py-2">
+              {/* Stats Cards */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 content-start text-left">
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                  <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">견적 제출 수</div>
+                  <div className="text-xl font-bold text-slate-800">
+                    {dashboardStats ? `${dashboardStats.submitted_quotes_count}건` : "로딩중..."}
+                  </div>
+                  <div className="text-[9px] text-slate-400 mt-2 font-medium">누적 제출 기준</div>
+                </div>
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                  <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">수주 성공률</div>
+                  <div className="text-xl font-bold text-blue-600">
+                    {dashboardStats ? `${dashboardStats.winning_rate}%` : "로딩중..."}
+                  </div>
+                  <div className="text-[9px] text-blue-500 mt-2 font-medium">수주 / (수주+실주)</div>
+                </div>
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                  <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">AI 업무 시간 절감</div>
+                  <div className="text-xl font-bold text-indigo-600">
+                    {dashboardStats ? `${dashboardStats.time_saved_hours}시간` : "로딩중..."}
+                  </div>
+                  <div className="text-[9px] text-indigo-500 mt-2 font-medium">건당 3.5시간 절감</div>
+                </div>
+                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                  <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">평균 마진율</div>
+                  <div className="text-xl font-bold text-slate-800">
+                    {dashboardStats ? `${dashboardStats.avg_margin_rate}%` : "로딩중..."}
+                  </div>
+                  <div className="text-[9px] text-slate-400 mt-2 font-medium">목표 마진율: 25%</div>
+                </div>
+              </div>
+
+              {/* Charts */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-left">
+                <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex flex-col">
+                  <h3 className="text-slate-800 text-xs font-black mb-4 flex items-center gap-2">
+                    <span className="w-1.5 h-4 bg-blue-600 rounded-sm"></span>
+                    주간 수주 금액 트렌드 (최근 5주)
+                  </h3>
+                  <div className="flex-1 min-h-[250px] flex items-center justify-center">
+                    {dashboardStats ? (
+                      <WeeklyTrendChart trends={dashboardStats.weekly_trends} />
+                    ) : (
+                      <span className="text-slate-400 text-xs">데이터 로딩중...</span>
+                    )}
+                  </div>
+                </div>
+                <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex flex-col">
+                  <h3 className="text-slate-800 text-xs font-black mb-4 flex items-center gap-2">
+                    <span className="w-1.5 h-4 bg-emerald-600 rounded-sm"></span>
+                    발주처별 수주 / 실주 현황 (건수)
+                  </h3>
+                  <div className="flex-1 min-h-[250px] flex items-center justify-center">
+                    {dashboardStats ? (
+                      <CustomerRatioChart ratios={dashboardStats.customer_ratios} />
+                    ) : (
+                      <span className="text-slate-400 text-xs">데이터 로딩중...</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+
+        {/* Slide-in Panel (Only visible in Project DB View with selectedProject) */}
+        <div className={`fixed top-16 right-0 bottom-0 w-[45rem] bg-white border-l border-slate-200 shadow-2xl transition-transform duration-300 z-10 flex flex-col ${selectedProject ? 'translate-x-0' : 'translate-x-full'}`}>
+          {selectedProject && (
+            <>
+              <div className="p-8 pb-4 shrink-0 bg-white z-20 text-left">
+                <div className="flex justify-between items-start mb-6">
+                  <div>
+                    <div className="text-sm font-semibold text-blue-600 mb-1 flex items-center gap-2">
+                      {selectedProject.customer?.name}
+                      {isEditing && <span className="bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded-full">수정 모드</span>}
+                    </div>
+                    <h2 className="text-2xl font-bold text-slate-900 leading-tight">{selectedProject.title}</h2>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {!isEditing ? (
+                      <>
+                        <button 
+                          onClick={() => setIsEditing(true)} 
+                          className="text-blue-650 hover:bg-slate-100 px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-250 transition flex items-center gap-1 cursor-pointer"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                          수정
+                        </button>
+                        <button 
+                          onClick={() => handleDeleteProject(selectedProject.id)} 
+                          className="text-rose-600 hover:bg-rose-50 px-3 py-1.5 rounded-md text-sm font-semibold border border-rose-200 transition flex items-center gap-1 cursor-pointer"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                          삭제
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button 
+                          onClick={saveProjectModifications} 
+                          className="text-emerald-600 hover:bg-emerald-50 px-3 py-1.5 rounded-md text-sm font-semibold border border-emerald-250 transition flex items-center gap-1 font-bold cursor-pointer"
+                        >
+                          저장
+                        </button>
+                        <button 
+                          onClick={() => setIsEditing(false)} 
+                          className="text-slate-500 hover:bg-slate-100 px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-200 transition cursor-pointer"
+                        >
+                          취소
+                        </button>
+                      </>
+                    )}
+                    <button onClick={() => setSelectedProject(null)} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full cursor-pointer"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+                  </div>
+                </div>
+                
+                {/* Tabs */}
+                {!isEditing && (
+                  <div className="flex border-b border-slate-200">
+                    <button onClick={() => setActiveTab("specs")} className={`pb-3 px-4 font-semibold text-sm transition-colors cursor-pointer ${activeTab === "specs" ? "border-b-2 border-blue-600 text-blue-600" : "text-slate-500 hover:text-slate-700"}`}>상세 사양 (Specs)</button>
+                    <button onClick={() => setActiveTab("vendor")} className={`pb-3 px-4 font-semibold text-sm transition-colors flex items-center gap-2 cursor-pointer ${activeTab === "vendor" ? "border-b-2 border-indigo-600 text-indigo-600" : "text-slate-500 hover:text-slate-700"}`}>
+                      협력사 비교 매트릭스 <span className="bg-indigo-100 text-indigo-700 text-[10px] px-1.5 py-0.5 rounded-full">AI</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-8 pt-4 bg-slate-50">
+                {isEditing ? (
+                  /* Editing Mode Form */
+                  <div className="space-y-6 text-left">
+                    <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
+                      <h3 className="font-bold border-b pb-2 mb-2 text-slate-800 flex items-center gap-2">
+                        <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                        기본 정보 수정
+                      </h3>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="col-span-2">
+                          <label className="block text-xs font-bold text-slate-500 mb-1">프로젝트명</label>
+                          <input type="text" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white" value={editTitle} onChange={e => setEditTitle(e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">발주처명 (고객사)</label>
+                          <input type="text" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white" value={editCustomerName} onChange={e => setEditCustomerName(e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">설비 종류</label>
+                          <input type="text" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white" value={editEquipmentType} onChange={e => setEditEquipmentType(e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">설치 라인명</label>
+                          <input type="text" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white" value={editLineName} onChange={e => setEditLineName(e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">적용 강종</label>
+                          <input type="text" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white" value={editSteelGrade} onChange={e => setEditSteelGrade(e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">총 견적가 (₩)</label>
+                          <input type="text" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none font-mono font-bold bg-white" value={editTotalAmount} onChange={handleMoneyInputChange(setEditTotalAmount)} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">마진율 (%)</label>
+                          <input type="number" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white" value={editMarginRate} onChange={e => setEditMarginRate(e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
+                      <h3 className="font-bold border-b pb-2 mb-2 text-slate-800 flex items-center gap-2">
+                        <svg className="w-5 h-5 text-indigo-650" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /></svg>
+                        기술 사양 수정
+                      </h3>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">생산 속도</label>
+                          <input type="text" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white" value={editSpeed} onChange={e => setEditSpeed(e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">제어반 (PLC)</label>
+                          <input type="text" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white" value={editPlcType} onChange={e => setEditPlcType(e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">통신 프로토콜</label>
+                          <input type="text" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white" value={editCommType} onChange={e => setEditCommType(e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 mb-1">동작 환경</label>
+                          <input type="text" className="w-full border border-slate-200 p-2.5 rounded-lg text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white" value={editEnvironment} onChange={e => setEditEnvironment(e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 justify-end pt-4">
+                      <button onClick={() => setIsEditing(false)} className="px-5 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-lg text-xs transition cursor-pointer">취소</button>
+                      <button onClick={saveProjectModifications} className="px-5 py-2.5 bg-blue-600 hover:bg-blue-750 text-white font-bold rounded-lg text-xs transition shadow-md cursor-pointer">수정사항 저장</button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {activeTab === "specs" && (
+                      <div className="space-y-6">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-white p-4 rounded-lg border">
+                        <div className="text-xs text-slate-500 mb-1">총 견적가</div>
+                        <div className="text-xl font-bold text-blue-700">₩ {selectedProject.total_amount?.toLocaleString() || '-'}</div>
+                      </div>
+                      <div className="bg-white p-4 rounded-lg border">
+                        <div className="text-xs text-slate-500 mb-1">마진율</div>
+                        <div className="text-xl font-bold">{selectedProject.margin_rate || '-'}%</div>
+                      </div>
+                    </div>
+                    <div className="bg-white border rounded-lg p-5">
+                      <h3 className="font-bold border-b pb-2 mb-4 text-slate-800">기술 사양</h3>
+                      <div className="space-y-3">
+                        <div className="flex justify-between py-1 border-b border-dashed"><span className="text-slate-500">생산 속도</span><span className="font-semibold">{selectedProject.specs?.speed || '-'}</span></div>
+                        <div className="flex justify-between py-1 border-b border-dashed"><span className="text-slate-500">제어반 (PLC)</span><span className="font-semibold">{selectedProject.specs?.plc_type || '-'}</span></div>
+                        <div className="flex justify-between py-1 border-b border-dashed"><span className="text-slate-500">설치 환경</span><span className="font-bold text-amber-600">{selectedProject.specs?.environment || '-'}</span></div>
+                      </div>
+                    </div>
+
+                    {/* Divider and Commercial Results Section */}
+                    <hr className="my-6 border-t border-slate-200" />
+
+                    <div className="bg-white border rounded-lg p-5">
+                      <h3 className="font-bold border-b pb-2 mb-4 text-slate-800 flex items-center gap-2 text-base">
+                        <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+                        상업적 결과 기록
+                      </h3>
+                      <div className="space-y-3.5 text-left">
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-500 mb-1">진행 상태 선택</label>
+                          <select 
+                            className="w-full border border-slate-200 h-9 px-2 rounded-md bg-white text-xs focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 font-medium"
+                            value={statusInput}
+                            onChange={(e) => setStatusInput(e.target.value)}
+                          >
+                            <option value="검토중">검토중</option>
+                            <option value="견적제출">견적제출</option>
+                            <option value="수주">수주</option>
+                            <option value="실주">실주</option>
+                          </select>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-500 mb-1">최종 견적 제출 금액 (₩)</label>
+                            <input 
+                              type="text"
+                              className="w-full border border-slate-200 h-9 px-2.5 rounded-md text-xs focus:ring-2 focus:ring-blue-500 outline-none text-slate-800"
+                              placeholder="금액 입력"
+                              value={actualQuoteInput}
+                              onChange={handleMoneyInputChange(setActualQuoteInput)}
+                            />
+                            {actualQuoteInput && (
+                              <div className="text-[10px] text-slate-500 mt-1 font-semibold select-none leading-tight">
+                                {convertToKoreanWon(actualQuoteInput)}
+                              </div>
+                            )}
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-500 mb-1">최종 투찰 금액 (₩)</label>
+                            <input 
+                              type="text"
+                              className="w-full border border-slate-200 h-9 px-2.5 rounded-md text-xs focus:ring-2 focus:ring-blue-500 outline-none text-slate-800"
+                              placeholder="금액 입력"
+                              value={bidInput}
+                              onChange={handleMoneyInputChange(setBidInput)}
+                            />
+                            {bidInput && (
+                              <div className="text-[10px] text-slate-500 mt-1 font-semibold select-none leading-tight">
+                                {convertToKoreanWon(bidInput)}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {statusInput === "실주" && (
+                          <div className="p-3 bg-red-50/50 rounded-lg border border-red-100 space-y-3 animate-slide-down">
+                            <h4 className="text-xs font-bold text-red-800">실주 세부 정보 기록</h4>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-xs font-semibold text-red-700 mb-1">낙찰 경쟁업체명</label>
+                                <input 
+                                  type="text"
+                                  className="w-full border border-red-200 h-9 px-2.5 rounded-md text-xs focus:ring-2 focus:ring-red-500 outline-none text-slate-800"
+                                  placeholder="경쟁사 이름"
+                                  value={competitorInput}
+                                  onChange={(e) => setCompetitorInput(e.target.value)}
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-red-700 mb-1">경쟁사 낙찰 금액 (₩)</label>
+                                <input 
+                                  type="text"
+                                  className="w-full border border-red-200 h-9 px-2.5 rounded-md text-xs focus:ring-2 focus:ring-red-500 outline-none text-slate-800"
+                                  placeholder="낙찰가 입력"
+                                  value={winningPriceInput}
+                                  onChange={handleMoneyInputChange(setWinningPriceInput)}
+                                />
+                                {winningPriceInput && (
+                                  <div className="text-[10px] text-red-700 mt-1 font-semibold select-none leading-tight">
+                                    {convertToKoreanWon(winningPriceInput)}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        <button 
+                          onClick={saveCommercialResults}
+                          disabled={isSavingResults}
+                          className="w-full h-9 bg-emerald-600 text-white rounded-md text-xs font-bold hover:bg-emerald-700 transition disabled:opacity-50 flex items-center justify-center gap-2 mt-2"
+                        >
+                          {isSavingResults ? "저장 중..." : "상업 결과 저장"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Phase 4: Vendor Comparison Tab */}
+                {activeTab === "vendor" && (
+                  <div>
+                    <div className="mb-4 bg-indigo-50 border border-indigo-100 p-4 rounded-lg flex items-center gap-3">
+                      <svg className="w-6 h-6 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+                      <div>
+                        <h4 className="font-bold text-indigo-900 text-sm">AI 자동 견적 비교</h4>
+                        <p className="text-xs text-indigo-700 mt-0.5">협력사 견적서를 기반으로 최저가 및 최단 납기를 분석합니다.</p>
+                      </div>
+                    </div>
+
+                    {!vendorData ? <div className="text-center py-10 text-slate-500">데이터 로딩중...</div> : (
+                      <div className="space-y-8">
+                        {vendorData.items.map((item, idx) => {
+                          const minPrice = Math.min(...item.quotes.map(q => q.unit_price));
+                          const minDelivery = Math.min(...item.quotes.map(q => q.delivery_days));
+
+                          return (
+                            <div key={idx} className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
+                              <div className="bg-slate-100 px-4 py-3 border-b border-slate-200 font-bold text-slate-800">{item.item_name}</div>
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="bg-slate-50 text-left text-xs text-slate-500">
+                                    <th className="p-3 border-b">협력사</th>
+                                    <th className="p-3 border-b">단가 (원)</th>
+                                    <th className="p-3 border-b text-center">납기 (일)</th>
+                                    <th className="p-3 border-b">비고</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {item.quotes.map((q, qIdx) => (
+                                    <tr key={qIdx} className="hover:bg-slate-50">
+                                      <td className="p-3 font-medium text-slate-800">{q.vendor_name}</td>
+                                      <td className="p-3 font-semibold">
+                                        <div className="flex items-center gap-2">
+                                          ₩{q.unit_price.toLocaleString()}
+                                          {q.unit_price === minPrice && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold">최저가</span>}
+                                        </div>
+                                      </td>
+                                      <td className="p-3 text-center">
+                                        <div className="flex items-center justify-center gap-2">
+                                          {q.delivery_days}일
+                                          {q.delivery_days === minDelivery && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-bold">최단납기</span>}
+                                        </div>
+                                      </td>
+                                      <td className="p-3 text-slate-500 text-xs">{q.notes}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Phone-to-Task Modal */}
+      {isPhoneModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col">
+            <div className="p-5 border-b flex justify-between items-center bg-slate-50">
+              <h3 className="text-lg font-bold flex items-center gap-2"><svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg> 유선 문의 (Phone) 요약 기록</h3>
+              <button onClick={() => setIsPhoneModalOpen(false)} className="text-slate-400 hover:text-slate-600"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+            </div>
+            <div className="p-6">
+              <label className="block text-sm font-semibold mb-2">통화 내용 (STT 텍스트 입력)</label>
+              <textarea rows={6} className="w-full border border-slate-300 rounded-md p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="고객과의 통화 내용을 여기에 붙여넣으세요..." value={phoneText} onChange={e => setPhoneText(e.target.value)}></textarea>
+              <div className="mt-3 flex gap-2">
+                <button onClick={fillMockPhoneText} className="text-xs bg-slate-100 text-slate-600 px-3 py-1.5 rounded hover:bg-slate-200">가상 시나리오 채우기</button>
+              </div>
+            </div>
+            <div className="p-5 border-t bg-slate-50 flex justify-end gap-3">
+              <button onClick={() => setIsPhoneModalOpen(false)} className="px-5 py-2 text-slate-600 hover:bg-slate-200 rounded-md">취소</button>
+              <button onClick={handlePhoneSubmit} disabled={isSummarizing || !phoneText} className="px-5 py-2 bg-indigo-600 text-white font-bold rounded-md hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2">
+                {isSummarizing ? 'AI 요약 중...' : '업무 카드로 변환 (Task)'}
               </button>
-              {modalStep === 1 && (
-                <button onClick={startAIAnalysis} className="px-6 py-2.5 bg-blue-600 text-white font-medium hover:bg-blue-700 rounded-md transition flex items-center gap-2 shadow-sm">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                  AI 분석 시작
-                </button>
-              )}
-              {modalStep === 3 && (
-                <button onClick={saveProject} className="px-8 py-2.5 bg-green-600 text-white font-bold hover:bg-green-700 rounded-md transition shadow-md flex items-center gap-2">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                  이 내용으로 최종 저장
-                </button>
-              )}
             </div>
           </div>
         </div>
       )}
 
+      {/* Main Analysis Modal (Step 1~4) */}
+      {isQuoteModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6">
+          <div className={`bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col transition-all duration-500 ${modalStep >= 3 ? 'w-full max-w-[85rem] h-[90vh]' : 'w-[40rem] max-h-[85vh]'}`}>
+            <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-white shrink-0">
+              <h3 className="text-xl font-bold flex items-center gap-3"><span className="bg-blue-600 text-white w-8 h-8 rounded-full flex items-center justify-center text-sm">{modalStep}</span> 신규 견적 등록</h3>
+              <button onClick={() => { setIsQuoteModalOpen(false); setModalStep(1); setUploadedFile(null); setAiAnalysisResult(null); }} className="text-slate-400 hover:text-slate-600"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+            </div>
+            
+            <div className="flex-1 overflow-hidden flex flex-col">
+              {modalStep === 1 && (
+                <div className="p-8 space-y-6 text-left">
+                  <div>
+                    <label className="block text-sm font-semibold mb-2 text-slate-700">발주처 (고객사) 직접 입력</label>
+                    <input
+                      type="text"
+                      list="customers-list"
+                      placeholder="발주처명을 직접 입력하세요 (예: 자율주행 주식회사)"
+                      className="w-full border border-slate-300 p-3 rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-slate-800"
+                      value={draftProject.customer_name || ""}
+                      onChange={(e) => setDraftProject({ ...draftProject, customer_name: e.target.value })}
+                    />
+                    <datalist id="customers-list">
+                      {customers.map(c => (
+                        <option key={c.id} value={c.name} />
+                      ))}
+                    </datalist>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold mb-2 text-slate-700">설비 (기계) 종류 직접 입력</label>
+                    <input
+                      type="text"
+                      placeholder="설비 종류를 입력하세요 (예: 자율주행 로봇 플랫폼)"
+                      className="w-full border border-slate-300 p-3 rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-slate-800"
+                      value={draftProject.equipment_type || ""}
+                      onChange={(e) => setDraftProject({ ...draftProject, equipment_type: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold mb-2 text-slate-700">사양서 파일 업로드</label>
+                    <div
+                      className="border-2 border-dashed border-slate-300 p-10 rounded-lg text-center cursor-pointer hover:bg-slate-50 transition-all"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <p className="font-bold text-slate-600 mb-1">{uploadedFile ? uploadedFile.name : "사양서 드래그 앤 드롭 또는 클릭하여 업로드"}</p>
+                      <span className="text-xs text-slate-400">PDF, 이미지 등 지원</span>
+                      <input type="file" className="hidden" ref={fileInputRef} onChange={(e) => setUploadedFile(e.target.files?.[0] || null)} />
+                    </div>
+                  </div>
+                </div>
+              )}
+              {modalStep === 2 && <div className="flex-1 flex flex-col items-center justify-center"><div className="animate-spin h-16 w-16 border-4 border-slate-200 border-t-blue-600 rounded-full mb-4"></div><h3 className="text-xl font-bold">AI 사양서 분석 중...</h3></div>}
+              {modalStep === 3 && (
+                <div className="flex flex-1 overflow-hidden">
+                  {/* Left Side: File Spec Preview */}
+                  <div className="w-1/2 p-4 bg-slate-100 border-r flex flex-col justify-between">
+                    <div className="text-xs font-bold text-slate-500 mb-2 flex justify-between items-center">
+                      <span>📄 업로드된 사양서 원본 프리뷰</span>
+                      <span className="text-[10px] text-slate-400">{uploadedFile?.name}</span>
+                    </div>
+                    <div className="flex-1 min-h-0 bg-white rounded border border-slate-200 overflow-hidden shadow-inner">
+                      {filePreviewUrl ? (
+                        <object data={filePreviewUrl} type="application/pdf" className="w-full h-full">
+                          <div className="p-6 text-center text-slate-500 text-sm">
+                            PDF 뷰어를 지원하지 않는 브라우저이거나 이미지 파일입니다.
+                            <br />
+                            <span className="text-xs text-slate-400 mt-2 block">({uploadedFile?.name})</span>
+                          </div>
+                        </object>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-slate-400 text-sm">미리보기 파일을 로드할 수 없습니다.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Right Side: Multi-layered Strategic AI Report */}
+                  <div className="w-1/2 p-6 overflow-y-auto bg-slate-50 space-y-6 text-left">
+                    {/* Header Banner */}
+                    <div className="bg-slate-900 text-white p-5 rounded-lg flex items-center justify-between shadow-sm">
+                      <div>
+                        <h4 className="text-sm font-bold flex items-center gap-2">
+                          <span className="animate-pulse w-2 h-2 bg-blue-500 rounded-full inline-block"></span>
+                          🤖 AI 수석 견적 분석 리포트
+                        </h4>
+                        <p className="text-[10px] text-slate-400 mt-1 leading-normal">
+                          사양서의 제원을 추출하고 과거 프로젝트 DB를 연계하여 최적의 단가 및 수주 전략을 제시합니다.
+                        </p>
+                      </div>
+                      <span className="text-[10px] px-2 py-0.5 bg-slate-800 border border-slate-700 text-slate-300 rounded font-mono font-bold">
+                        V2.1 PRO
+                      </span>
+                    </div>
+
+                    {/* [요약]: 3줄 핵심 제언 */}
+                    <div className="bg-gradient-to-r from-blue-50/70 to-indigo-50/70 border border-blue-100 rounded-lg p-5">
+                      <h5 className="text-xs font-bold text-slate-800 mb-3 flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                        [요약] 대표이사 보고용 3줄 핵심 제언
+                      </h5>
+                      <div className="space-y-3">
+                        {aiAnalysisResult?.summary_points?.map((pt: string, idx: number) => (
+                          <div key={idx} className="flex gap-2.5 items-start">
+                            <span className="w-4.5 h-4.5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-black flex items-center justify-center shrink-0 mt-0.5">{idx + 1}</span>
+                            <p className="text-xs text-slate-700 leading-relaxed font-semibold">{pt}</p>
+                          </div>
+                        )) || (
+                          <p className="text-xs text-slate-500 italic">분석 요약 정보를 구성하고 있습니다...</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* [기술적 검토] */}
+                    <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 shadow-sm">
+                      <h5 className="text-xs font-bold text-slate-800 border-b pb-2.5 flex justify-between items-center">
+                        <span className="flex items-center gap-1.5">
+                          <svg className="w-3.5 h-3.5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                          [기술적 검토] 스펙 추출 및 난이도 분류
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-[10px] text-slate-500 font-normal">기술적 난이도:</span>
+                          {aiAnalysisResult?.tech_difficulty === "상" && (
+                            <span className="bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded text-[10px] font-black">상 (High)</span>
+                          )}
+                          {aiAnalysisResult?.tech_difficulty === "중" && (
+                            <span className="bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded text-[10px] font-black">중 (Medium)</span>
+                          )}
+                          {aiAnalysisResult?.tech_difficulty === "하" && (
+                            <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded text-[10px] font-black">하 (Low)</span>
+                          )}
+                        </span>
+                      </h5>
+
+                      {/* 과거 유사 프로젝트 비교 DB 연동 */}
+                      {aiAnalysisResult?.past_project_comparison && (
+                        <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex gap-2.5 items-start text-xs text-slate-600 leading-normal">
+                          <svg className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                          <div>
+                            <span className="font-bold text-slate-700 block mb-0.5">과거 유사 실적 DB 연계 비교</span>
+                            <span className="text-[11px] text-slate-500 leading-relaxed block">{aiAnalysisResult.past_project_comparison}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 사양 입력 및 수정 폼 */}
+                      <div className="grid grid-cols-2 gap-3 text-left">
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">프로젝트 타이틀</label>
+                          <input
+                            type="text"
+                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
+                            value={draftProject.title || ""}
+                            onChange={(e) => setDraftProject({ ...draftProject, title: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">설비 종류</label>
+                          <input
+                            type="text"
+                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none bg-slate-50"
+                            value={draftProject.equipment_type || ""}
+                            onChange={(e) => setDraftProject({ ...draftProject, equipment_type: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">설치 라인명</label>
+                          <input
+                            type="text"
+                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
+                            value={draftProject.line_name || ""}
+                            onChange={(e) => setDraftProject({ ...draftProject, line_name: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">적용 강종 분류</label>
+                          <input
+                            type="text"
+                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
+                            value={draftProject.steel_grade || ""}
+                            onChange={(e) => setDraftProject({ ...draftProject, steel_grade: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">동작 속도 사양</label>
+                          <input
+                            type="text"
+                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
+                            value={draftSpecs.speed || ""}
+                            onChange={(e) => setDraftSpecs({ ...draftSpecs, speed: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">제어 PLC 타입</label>
+                          <input
+                            type="text"
+                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
+                            value={draftSpecs.plc_type || ""}
+                            onChange={(e) => setDraftSpecs({ ...draftSpecs, plc_type: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">통신 프로토콜</label>
+                          <input
+                            type="text"
+                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
+                            value={draftSpecs.comm_type || ""}
+                            onChange={(e) => setDraftSpecs({ ...draftSpecs, comm_type: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">동작 환경 조건</label>
+                          <input
+                            type="text"
+                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
+                            value={draftSpecs.environment || ""}
+                            onChange={(e) => setDraftSpecs({ ...draftSpecs, environment: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* [원가 및 마진 시뮬레이션] */}
+                    <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 shadow-sm">
+                      <h5 className="text-xs font-bold text-slate-800 border-b pb-2.5 flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        [원가 및 마진 시뮬레이션]
+                      </h5>
+                      
+                      <div className="grid grid-cols-3 gap-3 text-center">
+                        <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                          <span className="block text-[9px] font-bold text-slate-400 mb-1">핵심 자재비</span>
+                          <span className="text-xs font-extrabold text-slate-700">₩{aiAnalysisResult?.cost_materials?.toLocaleString() || 0}</span>
+                        </div>
+                        <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                          <span className="block text-[9px] font-bold text-slate-400 mb-1">엔지니어 인건비</span>
+                          <span className="text-xs font-extrabold text-slate-700">₩{aiAnalysisResult?.cost_labor?.toLocaleString() || 0}</span>
+                        </div>
+                        <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                          <span className="block text-[9px] font-bold text-slate-400 mb-1">기술료 및 간접비</span>
+                          <span className="text-xs font-extrabold text-slate-700">₩{aiAnalysisResult?.cost_tech_fee?.toLocaleString() || 0}</span>
+                        </div>
+                      </div>
+                      
+                      <div className="bg-emerald-50/70 border border-emerald-200 rounded-lg p-4 flex items-center justify-between">
+                        <div>
+                          <span className="block text-[11px] font-bold text-emerald-800">대표이사 권장 최적 견적가 (마진 25% 반영)</span>
+                          <span className="text-[9px] text-emerald-600 font-medium">
+                            제조원가 ₩{((aiAnalysisResult?.cost_materials || 0) + (aiAnalysisResult?.cost_labor || 0) + (aiAnalysisResult?.cost_tech_fee || 0)).toLocaleString()} 기준
+                          </span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-lg font-black text-emerald-700">₩{aiAnalysisResult?.optimal_quote_price?.toLocaleString() || 0}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* [협력사 단가 최적화 로직] */}
+                    <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 shadow-sm">
+                      <div className="border-b pb-2.5 flex flex-col gap-0.5">
+                        <h5 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <svg className="w-3.5 h-3.5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                          [협력사 단가 최적화 조합 제안]
+                        </h5>
+                        <p className="text-[10px] text-slate-400">
+                          이번 프로젝트의 예산에 부합하도록 가용한 협력사의 과거 견적 데이터를 매칭한 이원화 옵션입니다.
+                        </p>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        {/* 최저가형 */}
+                        <div className="bg-gradient-to-b from-blue-50/40 to-white border border-blue-100 rounded-lg p-4 flex flex-col justify-between">
+                          <div>
+                            <span className="inline-block px-2 py-0.5 bg-blue-100 text-blue-800 text-[9px] font-black rounded mb-2">Option A. 최저가 실속 조합</span>
+                            <div className="border-b border-blue-100 pb-2 mb-3">
+                              <span className="text-[10px] text-slate-400 block">예상 조합 자재비</span>
+                              <span className="text-sm font-extrabold text-blue-700">
+                                ₩{aiAnalysisResult?.vendor_lowest_option?.reduce((sum: number, it: any) => sum + it.price, 0).toLocaleString() || 0}
+                              </span>
+                            </div>
+                            <div className="space-y-2">
+                              {aiAnalysisResult?.vendor_lowest_option?.map((item: any, idx: number) => (
+                                <div key={idx} className="flex justify-between items-start text-[11px] leading-normal border-b border-dashed border-slate-100 pb-1.5 last:border-0 last:pb-0">
+                                  <div>
+                                    <span className="font-bold text-slate-700 block">{item.item_name}</span>
+                                    <span className="text-[9px] text-slate-400 block font-normal">{item.vendor_name} | {item.spec}</span>
+                                  </div>
+                                  <span className="font-bold text-slate-600 shrink-0">₩{item.price.toLocaleString()}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* 성능최적형 */}
+                        <div className="bg-gradient-to-b from-purple-50/40 to-white border border-purple-100 rounded-lg p-4 flex flex-col justify-between">
+                          <div>
+                            <span className="inline-block px-2 py-0.5 bg-purple-100 text-purple-800 text-[9px] font-black rounded mb-2">Option B. 고신뢰성 성능 조합</span>
+                            <div className="border-b border-purple-100 pb-2 mb-3">
+                              <span className="text-[10px] text-slate-400 block">예상 조합 자재비</span>
+                              <span className="text-sm font-extrabold text-purple-700">
+                                ₩{aiAnalysisResult?.vendor_optimized_option?.reduce((sum: number, it: any) => sum + it.price, 0).toLocaleString() || 0}
+                              </span>
+                            </div>
+                            <div className="space-y-2">
+                              {aiAnalysisResult?.vendor_optimized_option?.map((item: any, idx: number) => (
+                                <div key={idx} className="flex justify-between items-start text-[11px] leading-normal border-b border-dashed border-slate-100 pb-1.5 last:border-0 last:pb-0">
+                                  <div>
+                                    <span className="font-bold text-slate-700 block">{item.item_name}</span>
+                                    <span className="text-[9px] text-slate-400 block font-normal">{item.vendor_name} | {item.spec}</span>
+                                  </div>
+                                  <span className="font-bold text-slate-600 shrink-0">₩{item.price.toLocaleString()}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* [전략적 수주 조언] */}
+                    <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-3 shadow-sm">
+                      <h5 className="text-xs font-bold text-slate-800 border-b pb-2.5 flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 text-rose-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                        [전략적 수주 조언] 실행 액션 아이템
+                      </h5>
+                      <div className="space-y-2">
+                        {aiAnalysisResult?.strategic_advice?.map((adv: string, idx: number) => (
+                          <div key={idx} className="flex gap-2 items-start bg-slate-50 p-2.5 rounded border border-slate-100">
+                            <svg className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4" /></svg>
+                            <p className="text-xs text-slate-700 leading-relaxed font-semibold">{adv}</p>
+                          </div>
+                        )) || (
+                          <p className="text-xs text-slate-500 italic">가이드를 분석하는 중입니다...</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 리스크 자동 탐지 체크리스트 */}
+                    {riskAlerts.length > 0 && (
+                      <div className="bg-rose-50 border border-rose-200 rounded-lg p-5 space-y-3 shadow-sm">
+                        <h5 className="text-xs font-bold text-rose-800 flex items-center gap-1.5">
+                          <svg className="w-4 h-4 text-rose-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                          🚨 리스크 자동 탐지 및 최종 확인 체크리스트
+                        </h5>
+                        <p className="text-[10px] text-rose-600 leading-normal -mt-1">
+                          견적서 생성을 위해 추출된 기술 리스크 항목을 확인하시고 개별 서명/체크해 주시기 바랍니다.
+                        </p>
+                        <div className="space-y-2 pt-1">
+                          {riskAlerts.map((a, i) => (
+                            <label key={i} className="flex items-start gap-2.5 p-3 bg-white rounded border border-rose-100 hover:bg-rose-50/30 cursor-pointer transition">
+                              <input
+                                type="checkbox"
+                                className="mt-0.5 rounded border-rose-300 text-rose-600 focus:ring-rose-500"
+                                checked={a.acknowledged}
+                                onChange={() => setRiskAlerts(prev => prev.map((al, j) => j === i ? {...al, acknowledged: !al.acknowledged} : al))}
+                              />
+                              <span className="text-xs text-slate-700 font-semibold leading-relaxed">{a.message}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {modalStep === 4 && quoteData && (
+                <div className="flex-1 overflow-y-auto bg-slate-100 p-8 text-left">
+                  <div className="max-w-4xl mx-auto bg-white p-12 shadow-xl border border-slate-200 rounded-lg text-slate-800">
+                    <div className="flex justify-between items-start border-b pb-6 mb-8">
+                      <div>
+                        <h1 className="text-3xl font-extrabold text-slate-800 tracking-tight">견적서 (Quotation)</h1>
+                        <p className="text-sm text-slate-500 mt-1">SteelOps Intelligent Quotation System</p>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold text-lg text-slate-800">{draftProject.customer_name || "고객사"} 귀하</div>
+                        <p className="text-xs text-slate-500 mt-1">제출일: {new Date().toLocaleDateString()}</p>
+                      </div>
+                    </div>
+                    
+                    <div className="bg-blue-50 border border-blue-100 p-6 rounded-lg flex justify-between items-center mb-8">
+                      <span className="text-slate-700 font-bold">총 견적 금액 (VAT 별도):</span>
+                      <span className="text-3xl font-extrabold text-blue-700">₩{quoteData.total_amount.toLocaleString()}</span>
+                    </div>
+                    
+                    <div className="mb-8">
+                      <h3 className="text-base font-bold text-slate-800 mb-3 flex items-center gap-2">
+                        <span className="w-1.5 h-4 bg-blue-600 rounded-sm"></span>
+                        세부 항목 및 내역
+                      </h3>
+                      <table className="w-full text-sm border-collapse border border-slate-200 rounded-lg overflow-hidden">
+                        <thead>
+                          <tr className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
+                            <th className="border border-slate-200 p-3 text-left">품명</th>
+                            <th className="border border-slate-200 p-3 text-left">규격 및 사양</th>
+                            <th className="border border-slate-200 p-3 text-center w-16">수량</th>
+                            <th className="border border-slate-200 p-3 text-right">단가</th>
+                            <th className="border border-slate-200 p-3 text-right">금액</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-slate-700">
+                          {quoteData.items.map((i, x) => (
+                            <tr key={x} className="hover:bg-slate-50/50">
+                              <td className="border border-slate-200 p-3 font-semibold text-slate-900">{i.name}</td>
+                              <td className="border border-slate-200 p-3 text-slate-500 text-xs">{i.specification}</td>
+                              <td className="border border-slate-200 p-3 text-center">{i.quantity}</td>
+                              <td className="border border-slate-200 p-3 text-right">₩{i.unit_price.toLocaleString()}</td>
+                              <td className="border border-slate-200 p-3 text-right font-bold text-slate-900">₩{i.total_price.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    
+                    {quoteData.scope_of_supply && quoteData.scope_of_supply.length > 0 && (
+                      <div className="mb-8 p-6 bg-slate-50 border border-slate-200 rounded-lg">
+                        <h4 className="font-bold text-slate-800 mb-2.5">공급 범위 (Scope of Supply)</h4>
+                        <ul className="list-disc pl-5 text-slate-600 space-y-1 text-sm">
+                          {quoteData.scope_of_supply.map((s, x) => (
+                            <li key={x}>{s}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
+                      <div className="bg-red-50/70 p-6 border border-red-100 rounded-lg">
+                        <h4 className="font-bold text-red-800 mb-2.5 flex items-center gap-1.5">
+                          <svg className="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                          제외 사항 (Exclusions)
+                        </h4>
+                        <ul className="list-disc pl-5 text-red-700 text-xs space-y-1.5">
+                          {quoteData.exclusions.map((e, x) => (
+                            <li key={x} className="leading-relaxed">{e}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="bg-slate-50 p-6 border border-slate-200 rounded-lg">
+                        <h4 className="font-bold text-slate-800 mb-2.5 flex items-center gap-1.5">
+                          <svg className="w-4 h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                          기본 조건 (Conditions)
+                        </h4>
+                        <ul className="list-disc pl-5 text-slate-600 text-xs space-y-1.5">
+                          {quoteData.conditions.map((c, x) => (
+                            <li key={x} className="leading-relaxed">{c}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="p-5 border-t bg-white flex justify-end gap-3 shrink-0">
+              {modalStep === 1 && <button onClick={startAIAnalysis} className="px-6 py-2 bg-blue-600 text-white font-medium rounded-md">AI 분석 시작</button>}
+              {modalStep === 3 && (
+                <button
+                  onClick={generateQuote}
+                  disabled={riskAlerts.some(a => !a.acknowledged)}
+                  className={`px-6 py-2 bg-indigo-600 text-white font-bold rounded-md transition shadow-md ${
+                    riskAlerts.some(a => !a.acknowledged)
+                      ? "bg-slate-300 text-slate-500 cursor-not-allowed opacity-70"
+                      : "hover:bg-indigo-700"
+                  }`}
+                >
+                  견적서 자동 생성
+                </button>
+              )}
+              {modalStep === 4 && <button onClick={saveProject} className="px-8 py-2 bg-green-600 text-white font-bold rounded-md">최종 저장</button>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

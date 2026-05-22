@@ -26,6 +26,12 @@ class CustomerResponse(CustomerBase):
     model_config = ConfigDict(from_attributes=True)
     id: str
 
+class CustomerUpdate(BaseModel):
+    name: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_number: Optional[str] = None
+    email: Optional[str] = None
+
 class UserBase(BaseModel):
     name: str
     email: Optional[str] = None
@@ -176,6 +182,26 @@ class DashboardStatsResponse(BaseModel):
     avg_margin_rate: float
     weekly_trends: list[WeeklyTrendItem]
     customer_ratios: list[CustomerRatioItem]
+
+class GmailIntakeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    message_id: str
+    subject: str
+    sender: str
+    received_at: datetime
+    snippet: Optional[str] = None
+    attachment_name: Optional[str] = None
+    ai_status: str
+    approval_status: str
+    processed_project_id: Optional[str] = None
+    created_at: datetime
+
+
+class GmailIntakePaginatedResponse(BaseModel):
+    intakes: list[GmailIntakeResponse]
+    next_page_token: Optional[str] = None
+
 
 
 

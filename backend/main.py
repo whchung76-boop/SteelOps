@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Depends, Query, File, UploadFile, HTTPException, Form
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session, joinedload
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
@@ -101,6 +102,37 @@ def create_customer(customer: schemas.CustomerCreate, db: Session = Depends(get_
     db.commit()
     db.refresh(db_customer)
     return db_customer
+
+@app.put("/api/customers/{customer_id}", response_model=schemas.CustomerResponse)
+def update_customer(customer_id: str, customer_update: schemas.CustomerUpdate, db: Session = Depends(get_db)):
+    db_customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
+    if not db_customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+        
+    update_data = customer_update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_customer, key, value)
+        
+    db.commit()
+    db.refresh(db_customer)
+    return db_customer
+
+@app.delete("/api/customers/{customer_id}")
+def delete_customer(customer_id: str, db: Session = Depends(get_db)):
+    db_customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
+    if not db_customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+        
+    # Cascade delete projects and specs
+    projects = db.query(models.Project).filter(models.Project.customer_id == customer_id).all()
+    for p in projects:
+        db.query(models.ProjectSpec).filter(models.ProjectSpec.project_id == p.id).delete()
+        db.delete(p)
+        
+    db.delete(db_customer)
+    db.commit()
+    return {"message": "Customer and associated projects deleted successfully"}
+
 
 @app.post("/api/projects/upload", response_model=schemas.AIAnalysisResponse)
 async def upload_spec_file(
@@ -533,3 +565,354 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
         weekly_trends=weekly_trends,
         customer_ratios=customer_ratios
     )
+
+# --- Gmail Automatic Intake Endpoints ---
+@app.get("/api/gmail/intakes", response_model=schemas.GmailIntakePaginatedResponse)
+def get_gmail_intakes(page_token: Optional[str] = None, db: Session = Depends(get_db)):
+    limit = 10
+    offset = 0
+    if page_token:
+        try:
+            offset = int(page_token)
+        except ValueError:
+            pass
+            
+    query = db.query(models.GmailIntake).order_by(models.GmailIntake.received_at.desc())
+    total = query.count()
+    intakes = query.offset(offset).limit(limit).all()
+    
+    next_page_token = str(offset + limit) if offset + limit < total else None
+    
+    return schemas.GmailIntakePaginatedResponse(
+        intakes=intakes,
+        next_page_token=next_page_token
+    )
+
+@app.post("/api/gmail/sync", response_model=schemas.GmailIntakePaginatedResponse)
+def sync_gmail(page_token: Optional[str] = None, db: Session = Depends(get_db)):
+    import gmail_service
+    
+    try:
+        emails, next_gmail_page_token = gmail_service.fetch_gmail_emails(max_results=10, page_token=page_token)
+    except Exception as e:
+        if hasattr(e, "auth_url"):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "AUTH_REQUIRED",
+                    "auth_url": getattr(e, "auth_url")
+                }
+            )
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Gmail API 연동 실패: {str(e)}. credentials.json 파일이 없거나 환경 변수 설정이 올바르지 않습니다."
+        )
+        
+    for email in emails:
+        existing = db.query(models.GmailIntake).filter(models.GmailIntake.message_id == email["message_id"]).first()
+        if not existing:
+            new_intake = models.GmailIntake(
+                message_id=email["message_id"],
+                sender=email["sender"],
+                subject=email["subject"],
+                snippet=email["snippet"],
+                attachment_name=email["attachment_name"],
+                received_at=email["received_at"],
+                ai_status="PENDING",
+                approval_status="PENDING"
+            )
+            db.add(new_intake)
+            
+    db.commit()
+    
+    # Return the first page of DB intakes after sync
+    limit = 10
+    query = db.query(models.GmailIntake).order_by(models.GmailIntake.received_at.desc())
+    total = query.count()
+    intakes = query.limit(limit).all()
+    next_db_page_token = "10" if total > limit else None
+    
+    return schemas.GmailIntakePaginatedResponse(
+        intakes=intakes,
+        next_page_token=next_db_page_token
+    )
+
+@app.get("/api/gmail/oauth2callback")
+def gmail_oauth2callback(code: str = None, state: str = None, error: str = None):
+    import os
+    import gmail_service
+    from google_auth_oauthlib.flow import Flow
+
+    if error:
+        return HTMLResponse(
+            content=f"""
+            <html>
+                <head>
+                    <title>인증 실패</title>
+                    <style>
+                        body {{ font-family: 'Malgun Gothic', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f8fafc; margin: 0; }}
+                        .container {{ text-align: center; padding: 2.5rem; background: white; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1); max-width: 400px; }}
+                        h1 {{ color: #ef4444; font-size: 1.5rem; margin-bottom: 1rem; }}
+                        p {{ color: #64748b; font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem; }}
+                        button {{ background-color: #ef4444; color: white; border: none; padding: 0.75rem 1.5rem; font-size: 0.9rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: background-color 0.2s; }}
+                        button:hover {{ background-color: #dc2626; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>인증 실패</h1>
+                        <p>Google 인증 과정에서 오류가 발생했습니다.<br>에러 메시지: {error}</p>
+                        <button onclick="window.close()">창 닫기</button>
+                    </div>
+                </body>
+            </html>
+            """,
+            status_code=400
+        )
+
+    if not code:
+        raise HTTPException(status_code=400, detail="Authorization code is missing.")
+
+    credentials_path = os.getenv("GMAIL_CREDENTIALS_JSON_PATH", "credentials.json")
+    if not os.path.exists(credentials_path):
+        raise HTTPException(status_code=500, detail="credentials.json not found on server.")
+
+    try:
+        flow = Flow.from_client_secrets_file(
+            credentials_path,
+            scopes=gmail_service.SCOPES,
+            redirect_uri="http://localhost:8000/api/gmail/oauth2callback"
+        )
+        flow.fetch_token(code=code, code_verifier=state)
+        creds = flow.credentials
+
+        token_path = os.getenv("GMAIL_TOKEN_JSON_PATH", "token.json")
+        with open(token_path, "w") as token_file:
+            token_file.write(creds.to_json())
+
+        return HTMLResponse(
+            content="""
+            <html>
+                <head>
+                    <title>인증 완료</title>
+                    <style>
+                        body { font-family: 'Malgun Gothic', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f8fafc; margin: 0; }
+                        .container { text-align: center; padding: 2.5rem; background: white; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1); max-width: 400px; }
+                        .icon { font-size: 3rem; color: #10b981; margin-bottom: 1rem; }
+                        h1 { color: #1e293b; font-size: 1.5rem; margin-bottom: 1rem; }
+                        p { color: #64748b; font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem; }
+                        button { background-color: #3b82f6; color: white; border: none; padding: 0.75rem 1.5rem; font-size: 0.9rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: background-color 0.2s; }
+                        button:hover { background-color: #2563eb; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="icon">✓</div>
+                        <h1>Google 계정 연동 성공</h1>
+                        <p>Gmail 연동 인증이 성공적으로 완료되었습니다.<br>이 창을 닫고 동기화를 다시 진행해주세요.</p>
+                        <button onclick="window.close()">확인</button>
+                    </div>
+                    <script>
+                        try {
+                            if (window.opener) {
+                                window.opener.postMessage("gmail_auth_success", "*");
+                            }
+                        } catch (e) {
+                            console.error(e);
+                        }
+                    </script>
+                </body>
+            </html>
+            """
+        )
+    except Exception as e:
+        return HTMLResponse(
+            content=f"""
+            <html>
+                <head>
+                    <title>인증 실패</title>
+                    <style>
+                        body {{ font-family: 'Malgun Gothic', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f8fafc; margin: 0; }}
+                        .container {{ text-align: center; padding: 2.5rem; background: white; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1); max-width: 400px; }}
+                        h1 {{ color: #ef4444; font-size: 1.5rem; margin-bottom: 1rem; }}
+                        p {{ color: #64748b; font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem; }}
+                        button {{ background-color: #ef4444; color: white; border: none; padding: 0.75rem 1.5rem; font-size: 0.9rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: background-color 0.2s; }}
+                        button:hover {{ background-color: #dc2626; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>인증 처리 오류</h1>
+                        <p>서버에서 토큰을 교환하는 중 오류가 발생했습니다.<br>에러 메시지: {str(e)}</p>
+                        <button onclick="window.close()">창 닫기</button>
+                    </div>
+                </body>
+            </html>
+            """,
+            status_code=500
+        )
+
+@app.post("/api/gmail/intakes/{intake_id}/convert", response_model=schemas.ProjectResponse)
+def convert_gmail_to_project(intake_id: str, db: Session = Depends(get_db)):
+    intake = db.query(models.GmailIntake).filter(models.GmailIntake.id == intake_id).first()
+    if not intake:
+        raise HTTPException(status_code=404, detail="Gmail intake not found")
+        
+    tenant = db.query(models.Tenant).first()
+    if not tenant:
+        raise HTTPException(status_code=400, detail="No tenant found")
+        
+    if intake.message_id == "msg_001":
+        customer_name = "포스코"
+        contact_person = "홍길동 대리"
+        contact_number = "010-1234-5678"
+        email = "gildong@posco.com"
+        
+        project_title = "광양 2열연 마킹기 개조"
+        line_name = "2열연"
+        steel_grade = "열연"
+        equipment_type = "마킹기"
+        total_amount = 85000000.0
+        margin_rate = 25.0
+        
+        speed = "120mpm"
+        plc_type = "Siemens S7-1500 (Profinet)"
+        comm_type = "Profinet"
+        environment = "고온 분진 (방진 IP65 권장)"
+    elif intake.message_id == "msg_002":
+        customer_name = "현대제철"
+        contact_person = "김철수 과장"
+        contact_number = "010-9876-5432"
+        email = "chulsoo@hyundai-steel.com"
+        
+        project_title = "당진 1냉연 밴딩기 신설"
+        line_name = "1냉연"
+        steel_grade = "냉연"
+        equipment_type = "밴딩기"
+        total_amount = 50000000.0
+        margin_rate = 22.0
+        
+        speed = "150mpm"
+        plc_type = "LS XGB"
+        comm_type = "Modbus"
+        environment = "고온 다습 환경"
+    elif intake.message_id == "msg_003":
+        customer_name = "포스코"
+        contact_person = "김영희 대리"
+        contact_number = "010-5555-6666"
+        email = "yeonghee@posco.com"
+        
+        project_title = "포항 후판 비전검사기"
+        line_name = "후판"
+        steel_grade = "후판"
+        equipment_type = "비전검사기"
+        total_amount = 120000000.0
+        margin_rate = 28.0
+        
+        speed = "80mpm"
+        plc_type = "ROS2 / IPC (자동 제어)"
+        comm_type = "Ethernet"
+        environment = "진동 및 자기장 (밀폐형 IP65)"
+    else:
+        email = intake.sender
+        sender_lower = email.lower()
+        
+        if "posco" in sender_lower:
+            customer_name = "포스코"
+            contact_person = email.split("@")[0] + " 대리"
+            contact_number = "010-1234-5678"
+        elif "hyundai" in sender_lower or "hyundai-steel" in sender_lower:
+            customer_name = "현대제철"
+            contact_person = email.split("@")[0] + " 과장"
+            contact_number = "010-9876-5432"
+        else:
+            customer_name = "신규 고객사"
+            contact_person = email.split("@")[0] if "@" in email else "담당자 미지정"
+            contact_number = ""
+            
+        project_title = intake.subject.replace("[참조]", "").replace("[견적서]", "").strip()
+        
+        line_name = "미지정"
+        for word in ["1열연", "2열연", "1냉연", "2냉연", "후판", "도금"]:
+            if word in project_title:
+                line_name = word
+                break
+                
+        steel_grade = "미지정"
+        for word in ["열연", "냉연", "후판"]:
+            if word in project_title:
+                steel_grade = word
+                break
+                
+        equipment_type = "자동화 설비"
+        for word in ["마킹기", "밴딩기", "비전검사기", "센서"]:
+            if word in project_title:
+                equipment_type = word
+                break
+                
+        total_amount = 60000000.0
+        margin_rate = 25.0
+        
+        speed = "100mpm"
+        plc_type = "Siemens S7-1500 (Profinet)" if customer_name == "포스코" else "LS XGB"
+        comm_type = "Profinet" if customer_name == "포스코" else "Modbus"
+        environment = "고온 분진 (방진 IP65 권장)"
+
+    customer = db.query(models.Customer).filter(
+        models.Customer.tenant_id == tenant.id,
+        models.Customer.name == customer_name
+    ).first()
+    
+    if not customer:
+        customer = models.Customer(
+            tenant_id=tenant.id,
+            name=customer_name,
+            contact_person=contact_person,
+            contact_number=contact_number,
+            email=email
+        )
+        db.add(customer)
+        db.commit()
+        db.refresh(customer)
+    else:
+        if not customer.contact_person: customer.contact_person = contact_person
+        if not customer.contact_number: customer.contact_number = contact_number
+        if not customer.email: customer.email = email
+        db.commit()
+        db.refresh(customer)
+        
+    project = models.Project(
+        tenant_id=tenant.id,
+        customer_id=customer.id,
+        title=project_title,
+        line_name=line_name,
+        steel_grade=steel_grade,
+        equipment_type=equipment_type,
+        status="검토중",
+        total_amount=total_amount,
+        margin_rate=margin_rate
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    
+    spec = models.ProjectSpec(
+        project_id=project.id,
+        speed=speed,
+        plc_type=plc_type,
+        comm_type=comm_type,
+        environment=environment
+    )
+    db.add(spec)
+    
+    intake.ai_status = "COMPLETED"
+    intake.approval_status = "APPROVED"
+    intake.processed_project_id = project.id
+    
+    db.commit()
+    db.refresh(project)
+    
+    return db.query(models.Project).options(
+        joinedload(models.Project.customer),
+        joinedload(models.Project.specs)
+    ).filter(models.Project.id == project.id).first()

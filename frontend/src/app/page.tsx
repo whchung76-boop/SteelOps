@@ -236,6 +236,7 @@ export default function Home() {
   const [newCustomerContactNumber, setNewCustomerContactNumber] = useState("");
   const [newCustomerEmail, setNewCustomerEmail] = useState("");
   const [isRegisteringCustomer, setIsRegisteringCustomer] = useState(false);
+  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   
   const [statusFilter, setStatusFilter] = useState("");
   const [keywordFilter, setKeywordFilter] = useState("");
@@ -314,6 +315,27 @@ export default function Home() {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [todayTasks, setTodayTasks] = useState<CallSummary[]>([]);
 
+  // Gmail Intake States
+  interface GmailIntake {
+    id: string;
+    message_id: string;
+    subject: string;
+    sender: string;
+    received_at: string;
+    snippet: string | null;
+    attachment_name: string | null;
+    ai_status: string;
+    approval_status: string;
+    processed_project_id: string | null;
+    created_at: string;
+  }
+  const [gmailIntakes, setGmailIntakes] = useState<GmailIntake[]>([]);
+  const [selectedIntakeId, setSelectedIntakeId] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isConverting, setIsConverting] = useState(false);
+  const [gmailNextPageToken, setGmailNextPageToken] = useState<string | null>(null);
+  const [isLoadingMoreGmail, setIsLoadingMoreGmail] = useState(false);
+
   const fetchProjects = async () => {
     setLoading(true);
     try {
@@ -337,8 +359,14 @@ export default function Home() {
     if (!newCustomerName.trim()) return alert("고객사명을 입력해 주세요.");
     setIsRegisteringCustomer(true);
     try {
-      const res = await fetch("http://localhost:8000/api/customers/", {
-        method: "POST",
+      const isEdit = !!editingCustomer;
+      const url = isEdit 
+        ? `http://localhost:8000/api/customers/${editingCustomer.id}` 
+        : "http://localhost:8000/api/customers/";
+      const method = isEdit ? "PUT" : "POST";
+      
+      const res = await fetch(url, {
+        method: method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: newCustomerName,
@@ -348,20 +376,58 @@ export default function Home() {
         }),
       });
       if (res.ok) {
-        alert("고객사가 성공적으로 등록되었습니다.");
+        alert(isEdit ? "고객사 정보가 성공적으로 수정되었습니다." : "고객사가 성공적으로 등록되었습니다.");
         setNewCustomerName("");
         setNewCustomerContactPerson("");
         setNewCustomerContactNumber("");
         setNewCustomerEmail("");
+        setEditingCustomer(null);
         await fetchCustomers(); // Refresh customer list
+        await fetchProjects(); // If name updated, project list reflects it
+        await fetchDashboardStats(); // Refresh dashboard
       } else {
-        alert("고객사 등록 실패");
+        alert(isEdit ? "고객사 수정 실패" : "고객사 등록 실패");
       }
     } catch (err) {
       console.error(err);
-      alert("고객사 등록 중 오류가 발생했습니다.");
+      alert("처리 중 오류가 발생했습니다.");
     } finally {
       setIsRegisteringCustomer(false);
+    }
+  };
+
+  const handleEditCustomer = (c: Customer) => {
+    setEditingCustomer(c);
+    setNewCustomerName(c.name);
+    setNewCustomerContactPerson(c.contact_person || "");
+    setNewCustomerContactNumber(c.contact_number || "");
+    setNewCustomerEmail(c.email || "");
+  };
+
+  const handleDeleteCustomer = async (customerId: string) => {
+    if (!confirm("정말 이 고객사를 삭제하시겠습니까?\n해당 고객사와 관련된 모든 프로젝트가 함께 삭제되며 복구할 수 없습니다.")) return;
+    try {
+      const res = await fetch(`http://localhost:8000/api/customers/${customerId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        alert("고객사가 정상적으로 삭제되었습니다.");
+        if (editingCustomer?.id === customerId) {
+          setEditingCustomer(null);
+          setNewCustomerName("");
+          setNewCustomerContactPerson("");
+          setNewCustomerContactNumber("");
+          setNewCustomerEmail("");
+        }
+        await fetchCustomers();
+        await fetchProjects();
+        await fetchDashboardStats();
+      } else {
+        alert("고객사 삭제에 실패했습니다.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("고객사 삭제 중 오류가 발생했습니다.");
     }
   };
 
@@ -383,18 +449,155 @@ export default function Home() {
     }
   };
 
+  const fetchGmailIntakes = async (pageToken?: string | null) => {
+    try {
+      let url = "http://localhost:8000/api/gmail/intakes";
+      if (pageToken) {
+        url += `?page_token=${encodeURIComponent(pageToken)}`;
+      }
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (pageToken) {
+          setGmailIntakes(prev => {
+            const existingIds = new Set(prev.map(item => item.id));
+            const newItems = data.intakes.filter((item: GmailIntake) => !existingIds.has(item.id));
+            return [...prev, ...newItems];
+          });
+        } else {
+          setGmailIntakes(data.intakes);
+        }
+        setGmailNextPageToken(data.next_page_token);
+      }
+    } catch (err) {
+      console.error("Error fetching gmail intakes:", err);
+    }
+  };
+
+  const handleLoadMoreGmail = async () => {
+    if (!gmailNextPageToken || isLoadingMoreGmail) return;
+    setIsLoadingMoreGmail(true);
+    try {
+      await fetchGmailIntakes(gmailNextPageToken);
+    } finally {
+      setIsLoadingMoreGmail(false);
+    }
+  };
+
+  const handleGmailSync = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await fetch("http://localhost:8000/api/gmail/sync", { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setGmailIntakes(data.intakes);
+        setGmailNextPageToken(data.next_page_token);
+        alert("지메일 동기화가 완료되었습니다.");
+      } else {
+        const errData: any = await res.json().catch(() => ({}));
+        if (res.status === 401 && errData.detail?.auth_url) {
+          if (confirm("지메일 동기화를 진행하려면 Google 계정 연동이 필요합니다. 인증 화면으로 이동하시겠습니까?")) {
+            window.open(errData.detail.auth_url, "gmail_auth_popup", "width=600,height=700,status=no,menubar=no,toolbar=no");
+          }
+        } else {
+          alert(errData.detail || "지메일 동기화에 실패했습니다.");
+        }
+      }
+    } catch (err) {
+      console.error("Error syncing gmail:", err);
+      alert("서버 연결에 실패했습니다.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleGmailConvert = async () => {
+    let targetId = selectedIntakeId;
+    if (!targetId && gmailIntakes.length > 0) {
+      targetId = gmailIntakes[0].id;
+      setSelectedIntakeId(targetId);
+    }
+
+    if (!targetId) {
+      return alert("변환할 이메일이 존재하지 않습니다.");
+    }
+
+    const selectedIntake = gmailIntakes.find(i => i.id === targetId);
+    if (selectedIntake && selectedIntake.approval_status === "APPROVED") {
+      const confirmReconvert = confirm("이미 변환된 메일입니다. 다시 변환하시겠습니까?");
+      if (!confirmReconvert) return;
+    }
+
+    setIsConverting(true);
+    try {
+      const res = await fetch(`http://localhost:8000/api/gmail/intakes/${targetId}/convert`, { method: "POST" });
+      if (res.ok) {
+        const newProject = await res.json();
+        alert("이메일 분석 및 영업 카드 등록이 완료되었습니다. 기술 검토 페이지로 이관합니다.");
+        await fetchGmailIntakes();
+        await fetchCustomers();
+        await fetchProjects();
+        await fetchDashboardStats();
+        setSelectedProject(newProject);
+        setActiveTab("specs");
+        setCurrentView("tech_review");
+      } else {
+        alert("프로젝트 카드 변환에 실패했습니다.");
+      }
+    } catch (err) {
+      console.error("Error converting email:", err);
+      alert("서버 연결에 실패했습니다.");
+    } finally {
+      setIsConverting(false);
+    }
+  };
+
   useEffect(() => { 
     fetchProjects(); 
     fetchCustomers(); 
     fetchEquipmentTypes();
     fetchDashboardStats();
+    fetchGmailIntakes();
   }, [statusFilter, equipmentFilter, steelGradeFilter]);
+
+  const syncRef = useRef(handleGmailSync);
+  useEffect(() => {
+    syncRef.current = handleGmailSync;
+  }, [handleGmailSync]);
+
+  useEffect(() => {
+    const handleAuthMessage = (event: MessageEvent) => {
+      if (event.origin !== "http://localhost:8000") return;
+      if (event.data === "gmail_auth_success") {
+        syncRef.current();
+      }
+    };
+    window.addEventListener("message", handleAuthMessage);
+    return () => window.removeEventListener("message", handleAuthMessage);
+  }, []);
 
   useEffect(() => {
     if (currentView === "dashboard") {
       fetchDashboardStats();
     }
   }, [currentView]);
+
+  // Automatically select the first email if list is not empty and nothing is selected
+  useEffect(() => {
+    if (gmailIntakes.length > 0 && !selectedIntakeId) {
+      setSelectedIntakeId(gmailIntakes[0].id);
+    }
+  }, [gmailIntakes, selectedIntakeId]);
+
+  // Debug log for Gmail intake selection state
+  useEffect(() => {
+    console.log("[DEBUG] Gmail Intake Selection State:", {
+      selectedIntakeId,
+      isConverting,
+      totalIntakes: gmailIntakes.length,
+      buttonDisabled: isConverting || (gmailIntakes.length === 0)
+    });
+  }, [selectedIntakeId, isConverting, gmailIntakes]);
 
   useEffect(() => {
     if (selectedProject) {
@@ -757,89 +960,172 @@ export default function Home() {
           {/* 1. 영업접수 View */}
           {currentView === 'inquiry' && (
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 items-start text-left">
-              {/* Left Panel: Phone Inquiry and Tasks */}
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6">
-                <div className="flex justify-between items-center border-b pb-4">
-                  <div>
-                    <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
-                      <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
-                      유선 영업 문의 접수 (STT)
-                    </h3>
-                    <p className="text-xs text-slate-400 mt-1">유선 통화 내용을 AI 보좌관이 분석하여 영업 업무 카드로 자동 변환합니다.</p>
-                  </div>
-                </div>
-                
+              {/* Left Panel: Gmail Inquiry Intake */}
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-6 flex flex-col justify-between min-h-[500px]">
                 <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">녹취록 또는 통화 요약 직접 입력</label>
-                    <textarea 
-                      rows={5} 
-                      className="w-full border border-slate-200 rounded-lg p-3.5 text-xs focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 leading-relaxed bg-slate-50/30" 
-                      placeholder="예: 현대제철 당진의 김과장입니다. 노후 마킹기 교체 건으로 서보 및 PLC(Profinet) 최신형 제어반 견적 요청합니다..."
-                      value={phoneText} 
-                      onChange={e => setPhoneText(e.target.value)}
-                    ></textarea>
+                  <div className="flex justify-between items-center border-b pb-4">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                        <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                        [지메일 견적 접수함]
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1">대표 지메일 사서함으로 수신된 견적 요청 메일을 실시간 자동 확인 및 동기화합니다.</p>
+                    </div>
                   </div>
-                  <div className="flex flex-col sm:flex-row justify-between gap-3 pt-1">
-                    <button onClick={fillMockPhoneText} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-md text-xs font-bold transition">
-                      💡 가상 통화 시나리오 자동 로드
-                    </button>
-                    <button 
-                      onClick={handlePhoneSubmit} 
-                      disabled={isSummarizing || !phoneText} 
-                      className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md text-xs transition disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-md"
-                    >
-                      {isSummarizing ? (
-                        <>
-                          <div className="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full"></div>
-                          분석 중...
-                        </>
-                      ) : '영업 업무 카드로 변환 (AI)'}
-                    </button>
+
+                  {/* Gmail Auto Sync List */}
+                  <div className="border border-slate-200 rounded-lg overflow-hidden bg-slate-50/20">
+                    <div className="overflow-y-auto max-h-[480px]">
+                      <table className="min-w-full divide-y divide-slate-200 text-xs">
+                        <thead className="bg-slate-50 text-slate-500 font-bold sticky top-0 z-10 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
+                          <tr>
+                            <th className="px-4 py-3 text-left bg-slate-50">보낸 사람</th>
+                            <th className="px-4 py-3 text-left bg-slate-50">메일 제목 / 요약</th>
+                            <th className="px-4 py-3 text-left bg-slate-50">수신 날짜</th>
+                            <th className="px-4 py-3 text-left bg-slate-50">첨부파일</th>
+                            <th className="px-4 py-3 text-center bg-slate-50">상태</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 bg-white text-slate-700">
+                          {gmailIntakes.length === 0 ? (
+                            <tr>
+                              <td colSpan={5} className="text-center py-24 text-slate-400">
+                                <svg className="w-8 h-8 text-slate-300 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0a2 2 0 01-2 2H6a2 2 0 01-2-2m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                                </svg>
+                                수신된 지메일 견적 요청 메일이 없습니다.<br/>
+                                <span className="text-[10px] text-slate-400 mt-1 block">[지메일 수동 동기화] 버튼을 눌러 메일을 즉시 가져오세요.</span>
+                              </td>
+                            </tr>
+                          ) : (
+                            gmailIntakes.map(intake => {
+                              const isSelected = selectedIntakeId === intake.id;
+                              const isApproved = intake.approval_status === "APPROVED";
+                              return (
+                                <tr 
+                                  key={intake.id}
+                                  onClick={() => setSelectedIntakeId(intake.id)}
+                                  className={`transition-all cursor-pointer ${
+                                    isSelected 
+                                      ? "bg-blue-50/60 border-l-4 border-blue-500 font-semibold" 
+                                      : isApproved 
+                                        ? "opacity-75 bg-slate-50/30 hover:bg-slate-50/50" 
+                                        : "hover:bg-slate-50/50"
+                                  }`}
+                                >
+                                  <td className="px-4 py-3 font-semibold text-slate-900 truncate max-w-[120px]" title={intake.sender}>
+                                    {intake.sender.split("@")[0]} <span className="text-[10px] text-slate-400 block font-normal">{intake.sender}</span>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <div className="font-bold text-slate-800">{intake.subject}</div>
+                                    <div className="text-[10px] text-slate-400 truncate max-w-[280px] mt-0.5">{intake.snippet}</div>
+                                  </td>
+                                  <td className="px-4 py-3 text-slate-500 font-mono text-[10px] whitespace-nowrap">
+                                    {new Date(intake.received_at).toLocaleDateString("ko-KR", {
+                                      month: "short",
+                                      day: "numeric",
+                                      hour: "2-digit",
+                                      minute: "2-digit"
+                                    })}
+                                  </td>
+                                  <td className="px-4 py-3 whitespace-nowrap">
+                                    {intake.attachment_name ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-600 text-[10px] rounded font-medium">
+                                        <svg className="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                                        </svg>
+                                        {intake.attachment_name}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-300 text-[10px]">-</span>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-3 text-center whitespace-nowrap">
+                                    {isApproved ? (
+                                      <span className="inline-flex px-2 py-0.5 bg-green-50 text-green-700 border border-green-200 text-[10px] rounded-full font-black">
+                                        변환완료
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 text-[10px] rounded-full font-black">
+                                        대기중
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                      {gmailNextPageToken && (
+                        <div className="p-3 text-center bg-white border-t border-slate-100">
+                          <button
+                            onClick={handleLoadMoreGmail}
+                            disabled={isLoadingMoreGmail}
+                            className="px-4 py-2 text-xs font-bold text-blue-600 hover:text-blue-700 transition disabled:opacity-50 inline-flex items-center gap-1.5"
+                          >
+                            {isLoadingMoreGmail ? (
+                              <>
+                                <div className="animate-spin h-3 w-3 border-2 border-blue-600 border-t-transparent rounded-full"></div>
+                                불러오는 중...
+                              </>
+                            ) : (
+                              <>
+                                <span>더 보기</span>
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                </svg>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
-                {/* Recents Phone logs */}
-                <div className="space-y-4 pt-4 border-t border-slate-100">
-                  <h4 className="text-sm font-bold text-slate-700">오늘의 접수된 영업 업무 ({todayTasks.length}건)</h4>
-                  {todayTasks.length === 0 ? (
-                    <div className="text-center py-8 bg-slate-50 rounded-lg border border-dashed border-slate-200 text-slate-400 text-xs">
-                      오늘 접수된 유선 문의 이력이 없습니다.
-                    </div>
-                  ) : (
-                    <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1">
-                      {todayTasks.map(t => (
-                        <div key={t.id} className="bg-slate-50 border border-slate-200 rounded-lg p-4 shadow-sm">
-                          <div className="flex justify-between items-start mb-2">
-                            <span className="font-bold text-slate-850 text-xs">{t.customer_name}</span>
-                            <span className="text-[10px] bg-blue-50 border border-blue-200 text-blue-800 px-2 py-0.5 rounded font-black">{t.inquiry_type}</span>
-                          </div>
-                          <div className="text-xs text-slate-600 mb-3 leading-relaxed">{t.specs}</div>
-                          <div className="text-[10px] font-bold text-slate-500 mb-1.5 uppercase">추천 할일 목록 (To-do List):</div>
-                          <ul className="text-[11px] space-y-1.5">
-                            {t.todos.map((todo, idx) => (
-                              <li key={idx} className="flex gap-2 items-start text-slate-700">
-                                <input type="checkbox" className="mt-0.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-3.5 w-3.5" />
-                                <span>{todo}</span>
-                              </li>
-                            ))}
-                          </ul>
-                          <div className="mt-4 flex justify-between items-center pt-3 border-t border-slate-200/50">
-                            <span className="text-[9px] text-slate-400 font-mono">{t.created_at ? new Date(t.created_at).toLocaleTimeString() : ''}</span>
-                            <button 
-                              onClick={() => {
-                                setDraftProject(p => ({ ...p, customer_name: t.customer_name, equipment_type: t.predicted_equipment }));
-                                setCurrentView('tech_review');
-                              }}
-                              className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded hover:bg-slate-800 transition font-bold"
-                            >
-                              기술 검토 연계하기 →
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                {/* Bottom Action buttons */}
+                <div className="flex flex-col sm:flex-row justify-between gap-3 pt-4 border-t border-slate-100">
+                  <button 
+                    onClick={handleGmailSync}
+                    disabled={isSyncing}
+                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-705 rounded-md text-xs font-bold transition disabled:opacity-50 flex items-center justify-center gap-1.5 border border-slate-200"
+                  >
+                    {isSyncing ? (
+                      <>
+                        <div className="animate-spin h-3.5 w-3.5 border-2 border-slate-700 border-t-transparent rounded-full"></div>
+                        동기화 중...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 7.89M9 11l3-3m0 0l3 3m-3-3v12" />
+                        </svg>
+                        지메일 수동 동기화
+                      </>
+                    )}
+                  </button>
+                  <button 
+                    onClick={handleGmailConvert}
+                    disabled={isConverting || gmailIntakes.length === 0}
+                    className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md text-xs transition disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-md"
+                  >
+                    {isConverting ? (
+                      <>
+                        <div className="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full"></div>
+                        카드 변환 중 (AI)...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                        영업 업무 카드 변환 (AI)
+                      </>
+                    )}
+                  </button>
                 </div>
               </div>
 
@@ -857,7 +1143,9 @@ export default function Home() {
 
                 {/* Add New Customer Form */}
                 <form onSubmit={registerCustomer} className="p-4 bg-slate-50 rounded-lg border border-slate-200 space-y-3">
-                  <h4 className="text-xs font-bold text-slate-700">신규 고객사 직접 등록</h4>
+                  <h4 className="text-xs font-bold text-slate-700">
+                    {editingCustomer ? "고객사 정보 수정" : "신규 고객사 직접 등록"}
+                  </h4>
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                     <div>
                       <label className="block text-[10px] font-bold text-slate-400 mb-1">고객사명 *</label>
@@ -901,13 +1189,30 @@ export default function Home() {
                       />
                     </div>
                   </div>
-                  <div className="text-right">
+                  <div className="text-right flex justify-end gap-2">
+                    {editingCustomer && (
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          setEditingCustomer(null);
+                          setNewCustomerName("");
+                          setNewCustomerContactPerson("");
+                          setNewCustomerContactNumber("");
+                          setNewCustomerEmail("");
+                        }}
+                        className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-705 rounded text-xs font-bold transition shadow-sm"
+                      >
+                        수정 취소
+                      </button>
+                    )}
                     <button 
                       type="submit" 
                       disabled={isRegisteringCustomer}
-                      className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-xs font-bold disabled:opacity-50 transition shadow-sm"
+                      className={`px-4 py-1.5 ${editingCustomer ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-indigo-600 hover:bg-indigo-700'} text-white rounded text-xs font-bold disabled:opacity-50 transition shadow-sm`}
                     >
-                      {isRegisteringCustomer ? '등록 중...' : '고객사 등록'}
+                      {isRegisteringCustomer 
+                        ? (editingCustomer ? '수정 중...' : '등록 중...') 
+                        : (editingCustomer ? '수정 완료' : '고객사 등록')}
                     </button>
                   </div>
                 </form>
@@ -922,12 +1227,13 @@ export default function Home() {
                         <th className="px-4 py-2.5 text-left">담당자</th>
                         <th className="px-4 py-2.5 text-left">연락처</th>
                         <th className="px-4 py-2.5 text-left">이메일</th>
+                        <th className="px-4 py-2.5 text-center w-24">작업</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
                       {customers.length === 0 ? (
                         <tr>
-                          <td colSpan={5} className="text-center py-6 text-slate-400 italic">등록된 고객사 정보가 없습니다.</td>
+                          <td colSpan={6} className="text-center py-6 text-slate-400 italic">등록된 고객사 정보가 없습니다.</td>
                         </tr>
                       ) : (
                         customers.map(c => (
@@ -937,6 +1243,22 @@ export default function Home() {
                             <td className="px-4 py-2">{c.contact_person || '-'}</td>
                             <td className="px-4 py-2 font-mono text-slate-600">{c.contact_number || '-'}</td>
                             <td className="px-4 py-2 font-mono text-slate-600">{c.email || '-'}</td>
+                            <td className="px-4 py-2 text-center flex justify-center items-center gap-2">
+                              <button 
+                                onClick={() => handleEditCustomer(c)}
+                                className="p-1 text-slate-500 hover:text-indigo-600 rounded hover:bg-indigo-50 transition"
+                                title="수정"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                              </button>
+                              <button 
+                                onClick={() => handleDeleteCustomer(c.id)}
+                                className="p-1 text-slate-500 hover:text-rose-600 rounded hover:bg-rose-50 transition"
+                                title="삭제"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                              </button>
+                            </td>
                           </tr>
                         ))
                       )}
@@ -1549,22 +1871,13 @@ export default function Home() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     {!isEditing ? (
-                      <>
-                        <button 
-                          onClick={() => setIsEditing(true)} 
-                          className="text-blue-650 hover:bg-slate-100 px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-250 transition flex items-center gap-1 cursor-pointer"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-                          수정
-                        </button>
-                        <button 
-                          onClick={() => handleDeleteProject(selectedProject.id)} 
-                          className="text-rose-600 hover:bg-rose-50 px-3 py-1.5 rounded-md text-sm font-semibold border border-rose-200 transition flex items-center gap-1 cursor-pointer"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                          삭제
-                        </button>
-                      </>
+                      <button 
+                        onClick={() => setIsEditing(true)} 
+                        className="text-blue-650 hover:bg-slate-100 px-3 py-1.5 rounded-md text-sm font-semibold border border-slate-250 transition flex items-center gap-1 cursor-pointer"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                        수정 모드 전환
+                      </button>
                     ) : (
                       <>
                         <button 
@@ -1581,6 +1894,13 @@ export default function Home() {
                         </button>
                       </>
                     )}
+                    <button 
+                      onClick={() => handleDeleteProject(selectedProject.id)} 
+                      className="text-rose-600 hover:bg-rose-50 px-3 py-1.5 rounded-md text-sm font-semibold border border-rose-200 transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                      삭제
+                    </button>
                     <button onClick={() => setSelectedProject(null)} className="text-slate-400 hover:bg-slate-100 p-2 rounded-full cursor-pointer"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
                   </div>
                 </div>

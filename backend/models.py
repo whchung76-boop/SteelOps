@@ -77,3 +77,24 @@ class ProjectSpec(Base):
     ai_extracted_data = Column(JSON) # JSON type for flexibility
     
     project = relationship("Project", back_populates="specs")
+
+class GmailIntake(Base):
+    __tablename__ = "gmail_intakes"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    message_id = Column(String(100), unique=True, index=True)
+    subject = Column(String, nullable=False)
+    sender = Column(String, nullable=False)
+    received_at = Column(DateTime, nullable=False)
+    snippet = Column(String)
+    
+    attachment_name = Column(String)
+    
+    # Status
+    ai_status = Column(String, default="PENDING") # PENDING, COMPLETED, FAILED
+    approval_status = Column(String, default="PENDING") # PENDING, APPROVED, REJECTED
+    processed_project_id = Column(String(36), ForeignKey("projects.id"), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    processed_project = relationship("Project")

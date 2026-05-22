@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Google API credentials & tokens
+credentials*.json
+token*.json

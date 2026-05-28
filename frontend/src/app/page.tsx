@@ -258,7 +258,45 @@ export default function Home() {
   const [riskAlerts, setRiskAlerts] = useState<RiskAlert[]>([]);
   const [recommendedProjects, setRecommendedProjects] = useState<Project[]>([]);
   const [quoteData, setQuoteData] = useState<QuoteResponse | null>(null);
-  const [aiAnalysisResult, setAiAnalysisResult] = useState<any>(null);
+  const [extractedData, setExtractedData] = useState<any>(null);
+  const [activeRowIdx, setActiveRowIdx] = useState<number | null>(null);
+  const [isVerified, setIsVerified] = useState(false);
+
+  // 파일 뷰어 연동
+  useEffect(() => {
+    if (uploadedFile) {
+      const url = URL.createObjectURL(uploadedFile);
+      setFilePreviewUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } else {
+      setFilePreviewUrl(null);
+    }
+  }, [uploadedFile]);
+
+  // 데이터 수신 확인 및 강제 렌더링 트리거를 위한 useEffect
+  useEffect(() => {
+    if (extractedData?.extracted_tables) {
+      console.log("useEffect Triggered - extracted_tables:", extractedData.extracted_tables);
+    }
+  }, [extractedData]);
+  const [quoteItems, setQuoteItems] = useState<{unitPrice: number, quantity: number}[]>([]);
+
+  // 세션 스토리지에서 quoteItems 불러오기
+  useEffect(() => {
+    const saved = sessionStorage.getItem("steelops_quote_items");
+    if (saved) {
+      try {
+        setQuoteItems(JSON.parse(saved));
+      } catch(e) {}
+    }
+  }, []);
+
+  // quoteItems 변경 시 세션 스토리지에 자동 저장
+  useEffect(() => {
+    if (quoteItems.length > 0) {
+      sessionStorage.setItem("steelops_quote_items", JSON.stringify(quoteItems));
+    }
+  }, [quoteItems]);
   
   const [draftProject, setDraftProject] = useState<Partial<Project>>({title: "", line_name: "", steel_grade: "", equipment_type: "", customer_id: "", customer_name: "", status: "검토중"});
   const [draftSpecs, setDraftSpecs] = useState<Partial<ProjectSpec>>({speed: "", plc_type: "", comm_type: "", environment: ""});
@@ -655,7 +693,7 @@ export default function Home() {
     }
   };
 
-  const startAIAnalysis = async () => {
+  const startExtraction = async () => {
     if (!uploadedFile || !draftProject.customer_name || !draftProject.equipment_type) {
       return alert("발주처, 설비 종류 및 사양서 파일을 모두 입력/업로드해주세요.");
     }
@@ -669,7 +707,13 @@ export default function Home() {
       const res = await fetch("http://localhost:8000/api/projects/upload", { method: "POST", body: formData });
       if (res.ok) {
         const data = await res.json();
-        setAiAnalysisResult(data);
+        console.log("extracted_tables", data.extracted_tables);
+        setExtractedData(data);
+        if (data.extracted_tables && Array.isArray(data.extracted_tables)) {
+          // 헤더를 제외한 나머지 행들에 대해 입력 폼 초기화
+          const dataRows = data.extracted_tables.length > 1 ? data.extracted_tables.slice(1) : data.extracted_tables;
+          setQuoteItems(dataRows.map(() => ({ unitPrice: 0, quantity: 1 })));
+        }
         setDraftProject(p => ({ 
           ...p, 
           title: data.title || p.title, 
@@ -678,41 +722,22 @@ export default function Home() {
           equipment_type: data.equipment_type || p.equipment_type 
         }));
         setDraftSpecs({ speed: data.speed, plc_type: data.plc_type, comm_type: data.comm_type, environment: data.environment });
-        setRiskAlerts((data.risk_alerts || []).map((m: string) => ({ message: m, acknowledged: false })));
-        
-        const recRes = await fetch("http://localhost:8000/api/projects/recommend", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ customer_id: draftProject.customer_id || null, equipment_type: data.equipment_type, plc_type: data.plc_type })
-        });
-        if (recRes.ok) setRecommendedProjects(await recRes.json());
         setModalStep(3);
       } else {
-        alert("분석 오류");
+        alert("추출 오류");
         setIsQuoteModalOpen(false);
         setModalStep(1);
       }
     } catch { 
-      alert("분석 오류"); 
+      alert("추출 오류"); 
       setIsQuoteModalOpen(false); 
       setModalStep(1); 
     }
   };
 
   const generateQuote = async () => {
-    if (riskAlerts.some(a => !a.acknowledged)) return alert("모든 리스크 경고를 확인해야 합니다.");
-    try {
-      const res = await fetch("http://localhost:8000/api/quotes/generate", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer_id: draftProject.customer_id || null, equipment_type: draftProject.equipment_type, plc_type: draftSpecs.plc_type })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setQuoteData(data);
-        const finalPrice = aiAnalysisResult?.optimal_quote_price || data.total_amount;
-        setDraftProject(p => ({ ...p, total_amount: finalPrice, margin_rate: 25 }));
-        setModalStep(4);
-      }
-    } catch { alert("견적 생성 오류"); }
+    // 수동 입력을 위해 바로 다음 단계로 이동
+    setModalStep(4);
   };
 
   const saveProject = async () => {
@@ -722,7 +747,7 @@ export default function Home() {
       setIsQuoteModalOpen(false); setModalStep(1); setUploadedFile(null);
       setDraftProject({title: "", line_name: "", steel_grade: "", equipment_type: "", customer_id: "", customer_name: "", status: "검토중"});
       setDraftSpecs({speed: "", plc_type: "", comm_type: "", environment: ""}); setRiskAlerts([]); setQuoteData(null);
-      setAiAnalysisResult(null);
+      setExtractedData(null);
       fetchProjects();
       fetchEquipmentTypes();
     } else alert("저장 실패");
@@ -1323,7 +1348,7 @@ export default function Home() {
                   
                   <div className="pt-2">
                     <button 
-                      onClick={startAIAnalysis} 
+                      onClick={startExtraction} 
                       className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition shadow-md flex items-center justify-center gap-1.5"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
@@ -1685,7 +1710,7 @@ export default function Home() {
                       </div>
                     ) : (
                       <div className="bg-slate-50 border border-dashed rounded-xl p-8 text-center text-slate-400 text-xs">
-                        AI 견적서를 빌드하려면 상단의 "AI 견적서 초안 자동 빌드" 버튼을 클릭하십시오.
+                        견적서 데이터를 등록하려면 버튼을 클릭하십시오.
                       </div>
                     )}
                   </div>
@@ -2207,7 +2232,7 @@ export default function Home() {
           <div className={`bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col transition-all duration-500 ${modalStep >= 3 ? 'w-full max-w-[85rem] h-[90vh]' : 'w-[40rem] max-h-[85vh]'}`}>
             <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-white shrink-0">
               <h3 className="text-xl font-bold flex items-center gap-3"><span className="bg-blue-600 text-white w-8 h-8 rounded-full flex items-center justify-center text-sm">{modalStep}</span> 신규 견적 등록</h3>
-              <button onClick={() => { setIsQuoteModalOpen(false); setModalStep(1); setUploadedFile(null); setAiAnalysisResult(null); }} className="text-slate-400 hover:text-slate-600"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+              <button onClick={() => { setIsQuoteModalOpen(false); setModalStep(1); setUploadedFile(null); setExtractedData(null); }} className="text-slate-400 hover:text-slate-600"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
             </div>
             
             <div className="flex-1 overflow-hidden flex flex-col">
@@ -2252,8 +2277,8 @@ export default function Home() {
                   </div>
                 </div>
               )}
-              {modalStep === 2 && <div className="flex-1 flex flex-col items-center justify-center"><div className="animate-spin h-16 w-16 border-4 border-slate-200 border-t-blue-600 rounded-full mb-4"></div><h3 className="text-xl font-bold">AI 사양서 분석 중...</h3></div>}
-              {modalStep === 3 && (
+              {modalStep === 2 && <div className="flex-1 flex flex-col items-center justify-center"><div className="animate-spin h-16 w-16 border-4 border-slate-200 border-t-blue-600 rounded-full mb-4"></div><h3 className="text-xl font-bold">AI가 사양서 제원을 정밀 분석 중입니다...</h3></div>}
+              {(modalStep === 3 || modalStep === 4) && (
                 <div className="flex flex-1 overflow-hidden">
                   {/* Left Side: File Spec Preview */}
                   <div className="w-1/2 p-4 bg-slate-100 border-r flex flex-col justify-between">
@@ -2282,11 +2307,11 @@ export default function Home() {
                     <div className="bg-slate-900 text-white p-5 rounded-lg flex items-center justify-between shadow-sm">
                       <div>
                         <h4 className="text-sm font-bold flex items-center gap-2">
-                          <span className="animate-pulse w-2 h-2 bg-blue-500 rounded-full inline-block"></span>
-                          🤖 AI 수석 견적 분석 리포트
+                          <span className="w-2 h-2 bg-blue-500 rounded-full inline-block"></span>
+                          견적 대상 품목 리스트
                         </h4>
                         <p className="text-[10px] text-slate-400 mt-1 leading-normal">
-                          사양서의 제원을 추출하고 과거 프로젝트 DB를 연계하여 최적의 단가 및 수주 전략을 제시합니다.
+                          추출된 사양서 데이터를 확인하고 단가 및 수량을 입력하세요.
                         </p>
                       </div>
                       <span className="text-[10px] px-2 py-0.5 bg-slate-800 border border-slate-700 text-slate-300 rounded font-mono font-bold">
@@ -2294,245 +2319,134 @@ export default function Home() {
                       </span>
                     </div>
 
-                    {/* [요약]: 3줄 핵심 제언 */}
-                    <div className="bg-gradient-to-r from-blue-50/70 to-indigo-50/70 border border-blue-100 rounded-lg p-5">
+                    {/* [표 데이터 표시 영역] 스프레드시트 UI */}
+                    <div className="bg-white border border-slate-200 rounded-lg p-5 shadow-sm">
                       <h5 className="text-xs font-bold text-slate-800 mb-3 flex items-center gap-1.5">
-                        <svg className="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                        [요약] 대표이사 보고용 3줄 핵심 제언
+                        <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                        [추출된 사양서 데이터]
                       </h5>
-                      <div className="space-y-3">
-                        {aiAnalysisResult?.summary_points?.map((pt: string, idx: number) => (
-                          <div key={idx} className="flex gap-2.5 items-start">
-                            <span className="w-4.5 h-4.5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-black flex items-center justify-center shrink-0 mt-0.5">{idx + 1}</span>
-                            <p className="text-xs text-slate-700 leading-relaxed font-semibold">{pt}</p>
-                          </div>
-                        )) || (
-                          <p className="text-xs text-slate-500 italic">분석 요약 정보를 구성하고 있습니다...</p>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* [기술적 검토] */}
-                    <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 shadow-sm">
-                      <h5 className="text-xs font-bold text-slate-800 border-b pb-2.5 flex justify-between items-center">
-                        <span className="flex items-center gap-1.5">
-                          <svg className="w-3.5 h-3.5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-                          [기술적 검토] 스펙 추출 및 난이도 분류
-                        </span>
-                        <span className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-slate-500 font-normal">기술적 난이도:</span>
-                          {aiAnalysisResult?.tech_difficulty === "상" && (
-                            <span className="bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded text-[10px] font-black">상 (High)</span>
-                          )}
-                          {aiAnalysisResult?.tech_difficulty === "중" && (
-                            <span className="bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded text-[10px] font-black">중 (Medium)</span>
-                          )}
-                          {aiAnalysisResult?.tech_difficulty === "하" && (
-                            <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded text-[10px] font-black">하 (Low)</span>
-                          )}
-                        </span>
-                      </h5>
-
-                      {/* 과거 유사 프로젝트 비교 DB 연동 */}
-                      {aiAnalysisResult?.past_project_comparison && (
-                        <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex gap-2.5 items-start text-xs text-slate-600 leading-normal">
-                          <svg className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                          <div>
-                            <span className="font-bold text-slate-700 block mb-0.5">과거 유사 실적 DB 연계 비교</span>
-                            <span className="text-[11px] text-slate-500 leading-relaxed block">{aiAnalysisResult.past_project_comparison}</span>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 사양 입력 및 수정 폼 */}
-                      <div className="grid grid-cols-2 gap-3 text-left">
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">프로젝트 타이틀</label>
-                          <input
-                            type="text"
-                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
-                            value={draftProject.title || ""}
-                            onChange={(e) => setDraftProject({ ...draftProject, title: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">설비 종류</label>
-                          <input
-                            type="text"
-                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none bg-slate-50"
-                            value={draftProject.equipment_type || ""}
-                            onChange={(e) => setDraftProject({ ...draftProject, equipment_type: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">설치 라인명</label>
-                          <input
-                            type="text"
-                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
-                            value={draftProject.line_name || ""}
-                            onChange={(e) => setDraftProject({ ...draftProject, line_name: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">적용 강종 분류</label>
-                          <input
-                            type="text"
-                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
-                            value={draftProject.steel_grade || ""}
-                            onChange={(e) => setDraftProject({ ...draftProject, steel_grade: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">동작 속도 사양</label>
-                          <input
-                            type="text"
-                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
-                            value={draftSpecs.speed || ""}
-                            onChange={(e) => setDraftSpecs({ ...draftSpecs, speed: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">제어 PLC 타입</label>
-                          <input
-                            type="text"
-                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
-                            value={draftSpecs.plc_type || ""}
-                            onChange={(e) => setDraftSpecs({ ...draftSpecs, plc_type: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">통신 프로토콜</label>
-                          <input
-                            type="text"
-                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
-                            value={draftSpecs.comm_type || ""}
-                            onChange={(e) => setDraftSpecs({ ...draftSpecs, comm_type: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase">동작 환경 조건</label>
-                          <input
-                            type="text"
-                            className="w-full border border-slate-200 p-2 rounded text-xs text-slate-800 focus:ring-1 focus:ring-blue-500 outline-none"
-                            value={draftSpecs.environment || ""}
-                            onChange={(e) => setDraftSpecs({ ...draftSpecs, environment: e.target.value })}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* [원가 및 마진 시뮬레이션] */}
-                    <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 shadow-sm">
-                      <h5 className="text-xs font-bold text-slate-800 border-b pb-2.5 flex items-center gap-1.5">
-                        <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                        [원가 및 마진 시뮬레이션]
-                      </h5>
-                      
-                      <div className="grid grid-cols-3 gap-3 text-center">
-                        <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
-                          <span className="block text-[9px] font-bold text-slate-400 mb-1">핵심 자재비</span>
-                          <span className="text-xs font-extrabold text-slate-700">₩{aiAnalysisResult?.cost_materials?.toLocaleString() || 0}</span>
-                        </div>
-                        <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
-                          <span className="block text-[9px] font-bold text-slate-400 mb-1">엔지니어 인건비</span>
-                          <span className="text-xs font-extrabold text-slate-700">₩{aiAnalysisResult?.cost_labor?.toLocaleString() || 0}</span>
-                        </div>
-                        <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
-                          <span className="block text-[9px] font-bold text-slate-400 mb-1">기술료 및 간접비</span>
-                          <span className="text-xs font-extrabold text-slate-700">₩{aiAnalysisResult?.cost_tech_fee?.toLocaleString() || 0}</span>
-                        </div>
-                      </div>
-                      
-                      <div className="bg-emerald-50/70 border border-emerald-200 rounded-lg p-4 flex items-center justify-between">
-                        <div>
-                          <span className="block text-[11px] font-bold text-emerald-800">대표이사 권장 최적 견적가 (마진 25% 반영)</span>
-                          <span className="text-[9px] text-emerald-600 font-medium">
-                            제조원가 ₩{((aiAnalysisResult?.cost_materials || 0) + (aiAnalysisResult?.cost_labor || 0) + (aiAnalysisResult?.cost_tech_fee || 0)).toLocaleString()} 기준
-                          </span>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-lg font-black text-emerald-700">₩{aiAnalysisResult?.optimal_quote_price?.toLocaleString() || 0}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* [협력사 단가 최적화 로직] */}
-                    <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 shadow-sm">
-                      <div className="border-b pb-2.5 flex flex-col gap-0.5">
-                        <h5 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <svg className="w-3.5 h-3.5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-                          [협력사 단가 최적화 조합 제안]
-                        </h5>
-                        <p className="text-[10px] text-slate-400">
-                          이번 프로젝트의 예산에 부합하도록 가용한 협력사의 과거 견적 데이터를 매칭한 이원화 옵션입니다.
-                        </p>
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-4">
-                        {/* 최저가형 */}
-                        <div className="bg-gradient-to-b from-blue-50/40 to-white border border-blue-100 rounded-lg p-4 flex flex-col justify-between">
-                          <div>
-                            <span className="inline-block px-2 py-0.5 bg-blue-100 text-blue-800 text-[9px] font-black rounded mb-2">Option A. 최저가 실속 조합</span>
-                            <div className="border-b border-blue-100 pb-2 mb-3">
-                              <span className="text-[10px] text-slate-400 block">예상 조합 자재비</span>
-                              <span className="text-sm font-extrabold text-blue-700">
-                                ₩{aiAnalysisResult?.vendor_lowest_option?.reduce((sum: number, it: any) => sum + it.price, 0).toLocaleString() || 0}
-                              </span>
+                      <div id="quote-builder" className="overflow-x-auto">
+                        {extractedData?.extracted_tables ? (
+                          <>
+                            <table className="w-full text-xs text-left border-collapse">
+                              <thead className="bg-slate-100">
+                                <tr>
+                                  <th className="border border-slate-300 px-3 py-2 font-bold text-slate-700 whitespace-nowrap text-center">Item No.</th>
+                                  <th className="border border-slate-300 px-3 py-2 font-bold text-slate-700 whitespace-nowrap text-center">품명 및 사양</th>
+                                  <th className="border border-slate-300 px-3 py-2 font-bold text-slate-700 whitespace-nowrap text-center">수량</th>
+                                  <th className="border border-slate-300 px-3 py-2 font-bold text-slate-700 whitespace-nowrap text-center">단가(원)</th>
+                                  <th className="border border-slate-300 px-3 py-2 font-bold text-slate-700 whitespace-nowrap text-center">소계(원)</th>
+                                  <th className="border border-slate-300 px-3 py-2 font-bold text-slate-700 whitespace-nowrap text-center">비고</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(extractedData.extracted_tables.length > 1 ? extractedData.extracted_tables.slice(1) : extractedData.extracted_tables).map((row: any[], rowIdx: number) => {
+                                  const qItem = quoteItems[rowIdx];
+                                  const defaultQuantity = parseInt(row[2]) || 1;
+                                  const quantity = qItem?.quantity !== undefined ? qItem.quantity : defaultQuantity;
+                                  const unitPrice = qItem?.unitPrice || 0;
+                                  const subTotal = quantity * unitPrice;
+                                  return (
+                                    <tr 
+                                      key={rowIdx} 
+                                      onClick={() => setActiveRowIdx(rowIdx)}
+                                      className={`cursor-pointer transition-colors ${activeRowIdx === rowIdx ? 'bg-blue-50 ring-2 ring-blue-400' : 'hover:bg-slate-50'}`}
+                                    >
+                                      <td className="border border-slate-200 px-3 py-2 text-slate-600 text-center">{row[0] || (rowIdx + 1)}</td>
+                                      <td className="border border-slate-200 px-3 py-2 text-slate-600">{row[1] || "-"}</td>
+                                      <td className="border border-slate-200 px-3 py-2 text-slate-600 text-center">
+                                        <input 
+                                          type="number" 
+                                          className="w-16 border border-slate-200 rounded px-2 py-1 text-center focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
+                                          value={quantity === 0 ? '' : quantity}
+                                          onChange={(e) => {
+                                            const newQty = parseInt(e.target.value) || 0;
+                                            const newItems = [...quoteItems];
+                                            if (!newItems[rowIdx]) newItems[rowIdx] = { unitPrice: 0, quantity: defaultQuantity };
+                                            newItems[rowIdx].quantity = newQty;
+                                            setQuoteItems(newItems);
+                                          }}
+                                        />
+                                      </td>
+                                      <td className="border border-slate-200 px-3 py-2 text-slate-600 text-right">
+                                        <input 
+                                          type="number" 
+                                          className="w-24 border border-slate-200 rounded px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
+                                          value={unitPrice === 0 ? '' : unitPrice}
+                                          placeholder="0"
+                                          onChange={(e) => {
+                                            const newPrice = parseInt(e.target.value) || 0;
+                                            const newItems = [...quoteItems];
+                                            if (!newItems[rowIdx]) newItems[rowIdx] = { unitPrice: 0, quantity: defaultQuantity };
+                                            newItems[rowIdx].unitPrice = newPrice;
+                                            setQuoteItems(newItems);
+                                          }}
+                                        />
+                                      </td>
+                                      <td className="border border-slate-200 px-3 py-2 text-slate-600 text-right font-bold text-blue-700">{subTotal.toLocaleString()}</td>
+                                      <td className="border border-slate-200 px-3 py-2 text-slate-600">{row[3] || row[4] || "-"}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                              <tfoot className="bg-blue-50/50">
+                                <tr>
+                                  <td colSpan={4} className="border border-slate-300 px-3 py-3 font-bold text-slate-800 text-right">총 견적 금액</td>
+                                  <td className="border border-slate-300 px-3 py-3 font-extrabold text-blue-700 text-right">
+                                    {quoteItems.reduce((acc, item, idx) => {
+                                      const rows = extractedData.extracted_tables.length > 1 ? extractedData.extracted_tables.slice(1) : extractedData.extracted_tables;
+                                      const qty = parseInt(rows[idx]?.[2]) || item.quantity || 1;
+                                      return acc + ((item.unitPrice || 0) * qty);
+                                    }, 0).toLocaleString()}
+                                  </td>
+                                  <td className="border border-slate-300 px-3 py-3"></td>
+                                </tr>
+                              </tfoot>
+                            </table>
+                            <div className="mt-4 flex justify-end">
+                              <button 
+                                onClick={() => {
+                                  const rows = extractedData.extracted_tables.length > 1 ? extractedData.extracted_tables.slice(1) : extractedData.extracted_tables;
+                                  const csvContent = [
+                                    ["Item No.", "품명 및 사양", "수량", "단가(원)", "소계(원)", "비고"],
+                                    ...rows.map((row: any[], idx: number) => {
+                                      const qItem = quoteItems[idx] || { unitPrice: 0, quantity: 1 };
+                                      const qty = parseInt(row[2]) || qItem.quantity || 1;
+                                      const subTotal = qty * (qItem.unitPrice || 0);
+                                      return [
+                                        row[0] || (idx + 1),
+                                        `"${(row[1] || '').replace(/"/g, '""')}"`,
+                                        qty,
+                                        qItem.unitPrice || 0,
+                                        subTotal,
+                                        `"${(row[3] || row[4] || '').replace(/"/g, '""')}"`
+                                      ];
+                                    }),
+                                    ["", "", "", "총 견적 금액", quoteItems.reduce((acc, item, idx) => {
+                                      const rows = extractedData.extracted_tables.length > 1 ? extractedData.extracted_tables.slice(1) : extractedData.extracted_tables;
+                                      const qty = parseInt(rows[idx]?.[2]) || item.quantity || 1;
+                                      return acc + ((item.unitPrice || 0) * qty);
+                                    }, 0), ""]
+                                  ].map(e => e.join(",")).join("\n");
+                                  
+                                  const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+                                  const url = URL.createObjectURL(blob);
+                                  const link = document.createElement("a");
+                                  link.setAttribute("href", url);
+                                  link.setAttribute("download", `견적서_${draftProject.customer_name || '고객사'}.csv`);
+                                  document.body.appendChild(link);
+                                  link.click();
+                                  document.body.removeChild(link);
+                                }}
+                                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs transition shadow-sm flex items-center gap-1.5"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                견적서 자동 생성 (CSV)
+                              </button>
                             </div>
-                            <div className="space-y-2">
-                              {aiAnalysisResult?.vendor_lowest_option?.map((item: any, idx: number) => (
-                                <div key={idx} className="flex justify-between items-start text-[11px] leading-normal border-b border-dashed border-slate-100 pb-1.5 last:border-0 last:pb-0">
-                                  <div>
-                                    <span className="font-bold text-slate-700 block">{item.item_name}</span>
-                                    <span className="text-[9px] text-slate-400 block font-normal">{item.vendor_name} | {item.spec}</span>
-                                  </div>
-                                  <span className="font-bold text-slate-600 shrink-0">₩{item.price.toLocaleString()}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                        
-                        {/* 성능최적형 */}
-                        <div className="bg-gradient-to-b from-purple-50/40 to-white border border-purple-100 rounded-lg p-4 flex flex-col justify-between">
-                          <div>
-                            <span className="inline-block px-2 py-0.5 bg-purple-100 text-purple-800 text-[9px] font-black rounded mb-2">Option B. 고신뢰성 성능 조합</span>
-                            <div className="border-b border-purple-100 pb-2 mb-3">
-                              <span className="text-[10px] text-slate-400 block">예상 조합 자재비</span>
-                              <span className="text-sm font-extrabold text-purple-700">
-                                ₩{aiAnalysisResult?.vendor_optimized_option?.reduce((sum: number, it: any) => sum + it.price, 0).toLocaleString() || 0}
-                              </span>
-                            </div>
-                            <div className="space-y-2">
-                              {aiAnalysisResult?.vendor_optimized_option?.map((item: any, idx: number) => (
-                                <div key={idx} className="flex justify-between items-start text-[11px] leading-normal border-b border-dashed border-slate-100 pb-1.5 last:border-0 last:pb-0">
-                                  <div>
-                                    <span className="font-bold text-slate-700 block">{item.item_name}</span>
-                                    <span className="text-[9px] text-slate-400 block font-normal">{item.vendor_name} | {item.spec}</span>
-                                  </div>
-                                  <span className="font-bold text-slate-600 shrink-0">₩{item.price.toLocaleString()}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* [전략적 수주 조언] */}
-                    <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-3 shadow-sm">
-                      <h5 className="text-xs font-bold text-slate-800 border-b pb-2.5 flex items-center gap-1.5">
-                        <svg className="w-3.5 h-3.5 text-rose-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                        [전략적 수주 조언] 실행 액션 아이템
-                      </h5>
-                      <div className="space-y-2">
-                        {aiAnalysisResult?.strategic_advice?.map((adv: string, idx: number) => (
-                          <div key={idx} className="flex gap-2 items-start bg-slate-50 p-2.5 rounded border border-slate-100">
-                            <svg className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4" /></svg>
-                            <p className="text-xs text-slate-700 leading-relaxed font-semibold">{adv}</p>
-                          </div>
-                        )) || (
-                          <p className="text-xs text-slate-500 italic">가이드를 분석하는 중입니다...</p>
+                          </>
+                        ) : (
+                          <p className="p-4 text-slate-400">데이터를 추출 중이거나 데이터가 없습니다.</p>
                         )}
                       </div>
                     </div>
@@ -2565,7 +2479,10 @@ export default function Home() {
                   </div>
                 </div>
               )}
-              {modalStep === 4 && quoteData && (
+              {modalStep === 4 && (
+                <>
+                  {console.log("quoteData in step 4:", quoteData)}
+                  {quoteData && (
                 <div className="flex-1 overflow-y-auto bg-slate-100 p-8 text-left">
                   <div className="max-w-4xl mx-auto bg-white p-12 shadow-xl border border-slate-200 rounded-lg text-slate-800">
                     <div className="flex justify-between items-start border-b pb-6 mb-8">
@@ -2648,12 +2565,30 @@ export default function Home() {
                         </ul>
                       </div>
                     </div>
+                    <div className="mt-6 pt-4 border-t border-slate-200">
+                      <label className="flex items-center gap-2 cursor-pointer bg-slate-50 p-4 rounded-lg border border-slate-200 hover:bg-slate-100 transition">
+                        <input 
+                          type="checkbox" 
+                          checked={isVerified} 
+                          onChange={(e) => setIsVerified(e.target.checked)} 
+                          className="w-5 h-5 text-blue-600 rounded border-slate-300 focus:ring-blue-500" 
+                        />
+                        <span className="text-sm font-bold text-slate-800">모든 단가와 수량을 확인했으며, 검증을 완료했습니다. (최종 견적 생성 동의)</span>
+                      </label>
+                    </div>
                   </div>
                 </div>
+                  )}
+                  {!quoteData && (
+                    <div className="flex-1 p-8 text-center text-slate-500">
+                      <p>모든 품목의 단가를 입력해 주십시오. 총액이 계산되면 '최종 저장'이 활성화됩니다.</p>
+                    </div>
+                  )}
+                </>
               )}
             </div>
             <div className="p-5 border-t bg-white flex justify-end gap-3 shrink-0">
-              {modalStep === 1 && <button onClick={startAIAnalysis} className="px-6 py-2 bg-blue-600 text-white font-medium rounded-md">AI 분석 시작</button>}
+              {modalStep === 1 && <button onClick={startExtraction} className="px-6 py-2 bg-blue-600 text-white font-medium rounded-md">데이터 추출 시작</button>}
               {modalStep === 3 && (
                 <button
                   onClick={generateQuote}
@@ -2667,7 +2602,15 @@ export default function Home() {
                   견적서 자동 생성
                 </button>
               )}
-              {modalStep === 4 && <button onClick={saveProject} className="px-8 py-2 bg-green-600 text-white font-bold rounded-md">최종 저장</button>}
+              {modalStep === 4 && (
+                <button 
+                  onClick={saveProject} 
+                  disabled={!isVerified || (quoteItems.length > 0 && quoteItems.some(i => !i.unitPrice || i.unitPrice <= 0))}
+                  className={`px-8 py-2 font-bold rounded-md transition ${isVerified && (!quoteItems.some(i => !i.unitPrice || i.unitPrice <= 0)) ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
+                >
+                  최종 저장
+                </button>
+              )}
             </div>
           </div>
         </div>

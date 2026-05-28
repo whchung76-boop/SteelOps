@@ -145,11 +145,53 @@ def get_attachment_content(message_id, filename, service=None):
             excel_file = io.BytesIO(file_bytes)
             xls = pd.ExcelFile(excel_file)
             sheets_text = []
+            
+            # 템플릿 타입 탐지
+            filename_lower = filename.lower()
+            sheet_names_lower = [s.lower() for s in xls.sheet_names]
+            
+            is_posco = (
+                "posco" in filename_lower or 
+                "포스코" in filename_lower or 
+                "광양" in filename_lower or 
+                "포항" in filename_lower or 
+                "제경비" in sheet_names_lower
+            )
+            is_hyundai = (
+                "hyundai" in filename_lower or 
+                "현대제철" in filename_lower or 
+                "당진" in filename_lower
+            )
+            
+            if is_posco:
+                template_type = "POSCO"
+                template_guide = (
+                    "=== TEMPLATE TYPE: POSCO ===\n"
+                    "[구조 및 매핑 가이드]\n"
+                    "- '갑지' 시트: 견적의 기본 정보(Ref. No., Date, 공급자 등)와 총 공급가액을 표기함.\n"
+                    "- '을지' 시트: 주요 자재비 및 직접 노무비 단가/금액 상세 내역을 표기함.\n"
+                    "- '제경비' 시트: 간접비(경비, 산재보험료, 고용보험료 등) 내역이 포함됨.\n"
+                    "=============================\n\n"
+                )
+            elif is_hyundai:
+                template_type = "현대제철"
+                template_guide = (
+                    "=== TEMPLATE TYPE: 현대제철 ===\n"
+                    "[구조 및 매핑 가이드]\n"
+                    "- '갑지' 시트: 회사명(현대제철), 담당자(이영철 책임매니저 등), 그리고 총 견적 금액 합계와 대분류 항목(1. 자재비, 2. 노무비, 3. 경비, 4. 일반관리비, 5. 기업이윤)을 표기함.\n"
+                    "- '을지' 시트: 자재비 및 노무비의 품명, 규격, 수량, 단가, 공급가액 등의 세부 구성 내역을 표기함.\n"
+                    "=============================\n\n"
+                )
+            else:
+                template_type = "일반(Generic)"
+                template_guide = "=== TEMPLATE TYPE: 일반(Generic) ===\n\n"
+                
             for sheet_name in xls.sheet_names:
                 df = pd.read_excel(xls, sheet_name=sheet_name)
                 df_str = df.to_string(index=False, header=True)
                 sheets_text.append(f"--- Sheet: {sheet_name} ---\n{df_str}")
-            text_content = "\n\n".join(sheets_text)
+                
+            text_content = template_guide + "\n\n".join(sheets_text)
             
         elif ext == '.pdf':
             pdf_file = io.BytesIO(file_bytes)

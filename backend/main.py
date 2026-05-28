@@ -147,104 +147,77 @@ def delete_customer(customer_id: str, db: Session = Depends(get_db)):
     return {"message": "Customer and associated projects deleted successfully"}
 
 
-@app.post("/api/projects/upload", response_model=schemas.AIAnalysisResponse)
+import docx
+import io
+
+@app.post("/api/projects/upload")
 async def upload_spec_file(
     file: UploadFile = File(...),
     customer: Optional[str] = Form(None),
     equipment_type: Optional[str] = Form(None)
 ):
-    # Mock AI Service delay
-    await asyncio.sleep(2.5)
-    
-    filename = file.filename or ""
-    cust_name = customer or "신규 고객사"
-    eq_type = equipment_type or "밴딩기"
-    
-    is_robot = ("자율주행" in filename or "로봇" in filename) or (equipment_type and ("자율주행" in equipment_type or "로봇" in equipment_type))
-    
-    if is_robot:
-        return schemas.AIAnalysisResponse(
-            title=f"{cust_name} {eq_type} 구축 ({filename})",
-            line_name="광양소 시편가공실",
-            steel_grade="기타(시편)",
-            equipment_type=eq_type,
-            speed="자율주행 1.5m/s",
-            plc_type="ROS2 / IPC (자동 제어)",
-            comm_type="Wi-Fi / 5G",
-            environment="시편가공실 (분진, 자기장 주의)",
-            risk_alerts=[
-                "⚠️ 적재용량 200kg 초과 여부 확인 필요",
-                "⚠️ 바닥면 단차 및 요철로 인한 주행 장애 요소 사전 실측 요망"
-            ],
-            summary_points=[
-                "시편가공실 내 고자기장 및 분진 환경에 대응하기 위한 밀폐형(IP65급) 외함 설계 및 자기장 차폐 차체 구조 적용이 필수적임.",
-                "과거 포항소 프로젝트 대비 좁은 회전 반경(R1.2m 이하) 스펙이 요구되어, 메카넘 휠 또는 전방향 조향 모듈(Dual-drive) 설계 검토 권장.",
-                "원가 절감과 단기 납기 준수를 위해 라이다 및 구동 제어 모듈에 국산화 협업 패키지(옵토센서+모션코리아)를 적용하여 최적 견적가 도출."
-            ],
-            tech_difficulty="상",
-            past_project_comparison="포항소 3선재 AGV 도입 프로젝트(2025)와 핵심 구동계는 80% 유사하나, 고자기장 환경(차폐 설계 필요) 및 좁은 협로 주행에 따른 특수 조향 구조 변경이 추가되어 기술적 난이도가 상승함.",
-            cost_materials=40000000.0,
-            cost_labor=12000000.0,
-            cost_tech_fee=11750000.0,
-            optimal_quote_price=85000000.0,
-            strategic_advice=[
-                "발주처 요구 납기(12주) 대비 2주 단축이 가능한 '핵심 모듈 사전 선발주' 안을 전략 제안서에 명시하여 일정 우위 선점.",
-                "모터 및 센서류 국산화 대안을 포함한 'Dual Option' 제안서로 경쟁사 대비 우호적 가격 점수를 획득함과 동시에 25% 마진율 수호.",
-                "무선 Wi-Fi 음영지역 발생에 대비한 LTE/5G 하이브리드 라우터 무상 지원 프로모션 패키지를 제안하여 수주 확률 제고."
-            ],
-            vendor_lowest_option=[
-                {"item_name": "구동 모터", "vendor_name": "모션코리아", "price": 4500000.0, "spec": "BLDC 400W"},
-                {"item_name": "라이다 센서", "vendor_name": "옵토센서", "price": 3200000.0, "spec": "2D Lidar 10m"},
-                {"item_name": "제어반/IPC", "vendor_name": "산전시스템", "price": 2800000.0, "spec": "Core i5 IPC (Basic)"}
-            ],
-            vendor_optimized_option=[
-                {"item_name": "구동 모터", "vendor_name": "Sanyo Denki (일본)", "price": 6800000.0, "spec": "AC Servo 400W (고정밀)"},
-                {"item_name": "라이다 센서", "vendor_name": "Velodyne (미국)", "price": 7500000.0, "spec": "3D LiDAR 16Ch (정밀 맵핑)"},
-                {"item_name": "제어반/IPC", "vendor_name": "Beckhoff (독일)", "price": 4500000.0, "spec": "EtherCAT IPC (차폐 강화형)"}
-            ]
-        )
-    
-    # Default Mock extracted data
-    return schemas.AIAnalysisResponse(
-        title=f"{cust_name} 신규 {eq_type} 도입 건 ({filename})",
-        line_name="2냉연",
-        steel_grade="냉연",
-        equipment_type=eq_type,
-        speed="150mpm",
-        plc_type="미기재 (확인 요망)",
-        comm_type="미기재 (확인 요망)",
-        environment="고온 다습",
-        risk_alerts=[
-            "⚠️ 제어반(PLC) 메이커 및 통신 방식 미기재",
-            "⚠️ 현장 에어압 조건 없음 (확인 요망)"
-        ],
-        summary_points=[
-            "2냉연 라인의 고온/다습 환경을 고려하여 스테인리스 스틸 재질의 제어반 외함 및 에어 쿨링 유닛 적용이 반드시 검토되어야 함.",
-            "발주서상 PLC 및 통신 사양이 공란이므로, 포스코 표준 Profinet 기반 Siemens S7-1500 제어반으로 제안하여 리스크 선제 방어.",
-            "기구 프레임은 기존 설계 도면을 90% 재사용 가능하므로, 원가 시뮬레이션상 기구 설계 부문의 인건비 및 기술료를 대폭 절감함."
-        ],
-        tech_difficulty="중",
-        past_project_comparison="광양 1냉연 밴딩기 개조 사업(2024)과 기구부 구조가 90% 일치하여 설계 재사용 가능. 단, 이번 프로젝트는 라인 속도가 120mpm에서 150mpm으로 향상되어 가이드 롤러 내마모 설계 변경 필요.",
-        cost_materials=25000000.0,
-        cost_labor=8000000.0,
-        cost_tech_fee=5000000.0,
-        optimal_quote_price=50000000.0,
-        strategic_advice=[
-            "포스코 스마트팩토리 표준 가이드라인 사전 준수 기술서 및 성적서를 제안서 첨부 서류로 추가하여 신뢰도 확보.",
-            "예비품 무상 제공 품목 확대(주요 마모 부품인 밴딩 헤드 소모품 1년분)를 통해 경쟁사 대비 정성적 평가 점수 가점 획득.",
-            "현장 설치 작업 시 가동 정지 시간(Down-time)을 단축하기 위한 48시간 내 모듈 단위 교체 설치 공법 전략 제안."
-        ],
-        vendor_lowest_option=[
-            {"item_name": "유압 모터", "vendor_name": "한일유압", "price": 3500000.0, "spec": "Standard Hydraulic 7.5kW"},
-            {"item_name": "PLC 제어반", "vendor_name": "LS일렉트릭", "price": 4200000.0, "spec": "XGB Series"},
-            {"item_name": "밴딩 헤드", "vendor_name": "대진기공", "price": 12000000.0, "spec": "PET Banding Head"}
-        ],
-        vendor_optimized_option=[
-            {"item_name": "유압 모터", "vendor_name": "Rexroth (독일)", "price": 5800000.0, "spec": "Variable Displacement 7.5kW"},
-            {"item_name": "PLC 제어반", "vendor_name": "Siemens (독일)", "price": 7500000.0, "spec": "S7-1500 (Profinet)"},
-            {"item_name": "밴딩 헤드", "vendor_name": "Signode (미국)", "price": 18000000.0, "spec": "Steel Banding Head (초고신뢰형)"}
-        ]
-    )
+    table_data = []
+    try:
+        content = await file.read()
+        
+        # 1. python-docx를 통한 Document 파싱
+        doc = docx.Document(io.BytesIO(content))
+        
+        # 2. 기본 추출 전략: document.tables에서 추출
+        for table in doc.tables:
+            if not table.rows:
+                continue
+            
+            # [1.3 구입내역] 표인지 확인 (Whitelisting)
+            is_target = False
+            for cell in table.rows[0].cells:
+                text = cell.text.strip().lower()
+                if "item no" in text or "품명" in text:
+                    is_target = True
+                    break
+                    
+            if not is_target:
+                continue # 조업조건, Utility 조건 등 제외
+                
+            for row in table.rows:
+                cleaned_row = [cell.text.strip() for cell in row.cells]
+                if any(cleaned_row):
+                    first_col = cleaned_row[0].lower()
+                    # 헤더이거나 숫자가 포함된(Item No.가 있는) 행만 추출 (데이터 클린업)
+                    if "item no" in first_col or "품명" in first_col or any(c.isdigit() for c in first_col):
+                        table_data.append(cleaned_row)
+                    
+        # 3. 백업 파싱 전략: tables 객체가 비어있을 경우 텍스트 기반 강제 매칭
+        if not table_data:
+            print("[WARN] doc.tables에 데이터가 없습니다. 텍스트 라인 기반 강제 매칭 시도.")
+            in_table_section = False
+            import re
+            for para in doc.paragraphs:
+                line = para.text.strip()
+                if not line:
+                    continue
+                
+                # 키워드 감지 시 파싱 섹션 진입
+                if "Item No" in line or "품명" in line:
+                    in_table_section = True
+                    
+                if in_table_section:
+                    # 탭(\t) 또는 다중 공백(2개 이상)을 기준으로 데이터 분리
+                    cols = re.split(r'\t|\s{2,}', line)
+                    if len(cols) > 1:
+                        table_data.append(cols)
+
+    except Exception as e:
+        import traceback
+        print("\n" + "="*50)
+        print("🚨 [에러 발생] 파싱 로직 실행 중 예외 발생:")
+        traceback.print_exc()
+        print("="*50 + "\n")
+        
+    return {
+        "status": "success", 
+        "extracted_tables": table_data
+    }
 
 @app.post("/api/projects/", response_model=schemas.ProjectResponse)
 def create_project(project: schemas.ProjectCreate, db: Session = Depends(get_db)):

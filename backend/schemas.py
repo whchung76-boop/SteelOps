@@ -67,6 +67,7 @@ class ProjectSpecCreate(BaseModel):
     plc_type: Optional[str] = None
     comm_type: Optional[str] = None
     environment: Optional[str] = None
+    ai_extracted_data: Optional[Any] = None
 
 class ProjectCreate(BaseModel):
     customer_id: Optional[str] = None
@@ -81,7 +82,14 @@ class ProjectCreate(BaseModel):
     margin_rate: Optional[float] = None
     specs: Optional[ProjectSpecCreate] = None
 
+class TechMatchingPoint(BaseModel):
+    item: str
+    compliance: str
+    evidence: str
+    approved: bool = False
+
 class AIAnalysisResponse(BaseModel):
+    project_id: Optional[str] = None
     title: Optional[str] = None
     line_name: Optional[str] = None
     steel_grade: Optional[str] = None
@@ -102,6 +110,12 @@ class AIAnalysisResponse(BaseModel):
     strategic_advice: list[str] = []
     vendor_lowest_option: list[dict[str, Any]] = []
     vendor_optimized_option: list[dict[str, Any]] = []
+    tech_matching_points: list[TechMatchingPoint] = []
+    extracted_items: list[dict[str, Any]] = []
+    ai_calculated_amount: float = 0.0
+    final_confirmed_amount: float = 0.0
+    extracted_items_for_mapping: list[dict[str, Any]] = []
+    table_found: Optional[bool] = False
 
 class RecommendRequest(BaseModel):
     customer_id: Optional[str] = None
@@ -202,6 +216,55 @@ class GmailIntakeResponse(BaseModel):
 class GmailIntakePaginatedResponse(BaseModel):
     intakes: list[GmailIntakeResponse]
     next_page_token: Optional[str] = None
+
+
+class GmailIntakePreviewResponse(BaseModel):
+    customer_name: str
+    contact_person: Optional[str] = None
+    contact_number: Optional[str] = None
+    email: Optional[str] = None
+    project_title: str
+    line_name: Optional[str] = None
+    steel_grade: Optional[str] = None
+    equipment_type: Optional[str] = None
+    total_amount: float
+    margin_rate: float
+    speed: Optional[str] = None
+    plc_type: Optional[str] = None
+    comm_type: Optional[str] = None
+    environment: Optional[str] = None
+
+
+class GmailIntakeConvertRequest(BaseModel):
+    customer_name: str
+    contact_person: Optional[str] = None
+    contact_number: Optional[str] = None
+    email: Optional[str] = None
+    project_title: str
+    line_name: Optional[str] = None
+    steel_grade: Optional[str] = None
+    equipment_type: Optional[str] = None
+    total_amount: float
+    margin_rate: float
+    speed: Optional[str] = None
+    plc_type: Optional[str] = None
+    comm_type: Optional[str] = None
+    environment: Optional[str] = None
+
+
+class UserDefinedMappingCreate(BaseModel):
+    keyword: str
+    part_name: str
+
+
+class UserDefinedMappingResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    keyword: str
+    part_name: str
+    created_at: datetime
+
+
 
 
 

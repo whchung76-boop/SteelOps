@@ -99,3 +99,11 @@ class GmailIntake(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     processed_project = relationship("Project")
+
+
+class UserDefinedMapping(Base):
+    __tablename__ = "user_defined_mappings"
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    keyword = Column(String, unique=True, index=True, nullable=False)
+    part_name = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

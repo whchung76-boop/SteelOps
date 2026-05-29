@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import * as mammoth from "mammoth";
 
 // Types matching the backend schema
 interface ProjectSpec { speed: string | null; plc_type: string | null; comm_type: string | null; environment: string | null; }
@@ -255,6 +256,7 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+  const [docxHtml, setDocxHtml] = useState<string | null>(null);
   const [riskAlerts, setRiskAlerts] = useState<RiskAlert[]>([]);
   const [recommendedProjects, setRecommendedProjects] = useState<Project[]>([]);
   const [quoteData, setQuoteData] = useState<QuoteResponse | null>(null);
@@ -262,14 +264,34 @@ export default function Home() {
   const [activeRowIdx, setActiveRowIdx] = useState<number | null>(null);
   const [isVerified, setIsVerified] = useState(false);
 
-  // 파일 뷰어 연동
+  // 파일 뷰어 연동 및 DOCX 파싱
   useEffect(() => {
     if (uploadedFile) {
       const url = URL.createObjectURL(uploadedFile);
       setFilePreviewUrl(url);
+      
+      if (uploadedFile.name.toLowerCase().endsWith('.docx')) {
+        const reader = new FileReader();
+        reader.onload = function(event) {
+          const arrayBuffer = event.target?.result as ArrayBuffer;
+          if (arrayBuffer) {
+            mammoth.convertToHtml({ arrayBuffer })
+              .then(result => setDocxHtml(result.value))
+              .catch(err => {
+                console.error("Mammoth error:", err);
+                setDocxHtml(null);
+              });
+          }
+        };
+        reader.readAsArrayBuffer(uploadedFile);
+      } else {
+        setDocxHtml(null);
+      }
+      
       return () => URL.revokeObjectURL(url);
     } else {
       setFilePreviewUrl(null);
+      setDocxHtml(null);
     }
   }, [uploadedFile]);
 
@@ -377,7 +399,7 @@ export default function Home() {
   const fetchProjects = async () => {
     setLoading(true);
     try {
-      const url = new URL("http://localhost:8000/api/projects/");
+      const url = new URL("http://127.0.0.1:8000/api/projects/");
       if (statusFilter) url.searchParams.append("status", statusFilter);
       if (keywordFilter) url.searchParams.append("keyword", keywordFilter);
       equipmentFilter.forEach(eq => url.searchParams.append("equipment_type", eq));
@@ -387,8 +409,44 @@ export default function Home() {
     } finally { setLoading(false); }
   };
 
+  const loadProjectDetails = async (p: any) => {
+    setSelectedProject(p);
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/api/projects/${p.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        console.log("받아온 데이터:", data);
+        setSelectedProject(data);
+        
+        // 1. 데이터가 있는지 확인
+        if (data.specs?.ai_extracted_data) {
+          let aiData = data.specs.ai_extracted_data;
+          if (typeof aiData === 'string') {
+            try { aiData = JSON.parse(aiData); } catch (e) {}
+          }
+          
+          const { quoteItems, extractedData } = aiData;
+          
+          // 2. 상태 강제 업데이트
+          setExtractedData(extractedData);
+          setQuoteItems(quoteItems);
+          
+          // 3. (중요) 모달 억제 및 탭 전환
+          setIsQuoteModalOpen(false); 
+          setActiveTab("specs");      
+          console.log("데이터 복원 완료:", quoteItems);
+        } else {
+          // 데이터가 없는 완전 신규 프로젝트인 경우에만 모달 띄움
+          setIsQuoteModalOpen(true);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const fetchCustomers = async () => {
-    const res = await fetch("http://localhost:8000/api/customers/");
+    const res = await fetch("http://127.0.0.1:8000/api/customers/");
     if (res.ok) setCustomers(await res.json());
   };
 
@@ -399,8 +457,8 @@ export default function Home() {
     try {
       const isEdit = !!editingCustomer;
       const url = isEdit 
-        ? `http://localhost:8000/api/customers/${editingCustomer.id}` 
-        : "http://localhost:8000/api/customers/";
+        ? `http://127.0.0.1:8000/api/customers/${editingCustomer.id}` 
+        : "http://127.0.0.1:8000/api/customers/";
       const method = isEdit ? "PUT" : "POST";
       
       const res = await fetch(url, {
@@ -445,7 +503,7 @@ export default function Home() {
   const handleDeleteCustomer = async (customerId: string) => {
     if (!confirm("정말 이 고객사를 삭제하시겠습니까?\n해당 고객사와 관련된 모든 프로젝트가 함께 삭제되며 복구할 수 없습니다.")) return;
     try {
-      const res = await fetch(`http://localhost:8000/api/customers/${customerId}`, {
+      const res = await fetch(`http://127.0.0.1:8000/api/customers/${customerId}`, {
         method: "DELETE",
       });
       if (res.ok) {
@@ -471,7 +529,7 @@ export default function Home() {
 
   const fetchEquipmentTypes = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/projects/equipment-types");
+      const res = await fetch("http://127.0.0.1:8000/api/projects/equipment-types");
       if (res.ok) setEquipmentTypes(await res.json());
     } catch (err) {
       console.error("Error fetching equipment types:", err);
@@ -480,7 +538,7 @@ export default function Home() {
 
   const fetchDashboardStats = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/dashboard/stats");
+      const res = await fetch("http://127.0.0.1:8000/api/dashboard/stats");
       if (res.ok) setDashboardStats(await res.json());
     } catch (err) {
       console.error("Error fetching dashboard stats:", err);
@@ -489,7 +547,7 @@ export default function Home() {
 
   const fetchGmailIntakes = async (pageToken?: string | null) => {
     try {
-      let url = "http://localhost:8000/api/gmail/intakes";
+      let url = "http://127.0.0.1:8000/api/gmail/intakes";
       if (pageToken) {
         url += `?page_token=${encodeURIComponent(pageToken)}`;
       }
@@ -525,7 +583,7 @@ export default function Home() {
   const handleGmailSync = async () => {
     setIsSyncing(true);
     try {
-      const res = await fetch("http://localhost:8000/api/gmail/sync", { method: "POST" });
+      const res = await fetch("http://127.0.0.1:8000/api/gmail/sync", { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         setGmailIntakes(data.intakes);
@@ -568,7 +626,7 @@ export default function Home() {
 
     setIsConverting(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/gmail/intakes/${targetId}/convert`, { method: "POST" });
+      const res = await fetch(`http://127.0.0.1:8000/api/gmail/intakes/${targetId}/convert`, { method: "POST" });
       if (res.ok) {
         const newProject = await res.json();
         alert("이메일 분석 및 영업 카드 등록이 완료되었습니다. 기술 검토 페이지로 이관합니다.");
@@ -605,7 +663,7 @@ export default function Home() {
 
   useEffect(() => {
     const handleAuthMessage = (event: MessageEvent) => {
-      if (event.origin !== "http://localhost:8000") return;
+      if (event.origin !== "http://127.0.0.1:8000") return;
       if (event.data === "gmail_auth_success") {
         syncRef.current();
       }
@@ -663,6 +721,45 @@ export default function Home() {
       setEditCommType(selectedProject.specs?.comm_type || "");
       setEditEnvironment(selectedProject.specs?.environment || "");
       
+      // Hydrate quote data
+      if (selectedProject.specs?.ai_extracted_data) {
+        let aiData = selectedProject.specs.ai_extracted_data;
+        if (typeof aiData === 'string') {
+          try {
+            aiData = JSON.parse(aiData);
+          } catch (e) {
+            console.error("Failed to parse ai_extracted_data:", e);
+          }
+        }
+        
+        console.log("Hydrating with aiData:", aiData);
+        setExtractedData(aiData?.extractedData || null);
+        setQuoteItems(aiData?.quoteItems || []);
+
+        if (aiData?.extractedData?.extracted_tables && aiData?.quoteItems) {
+            const rows = aiData.extractedData.extracted_tables.length > 1 ? aiData.extractedData.extracted_tables.slice(1) : aiData.extractedData.extracted_tables;
+            const items = aiData.quoteItems.map((qi: any, idx: number) => ({
+                name: rows[idx]?.[1] || '품목', // 'Description' or similar
+                specification: rows[idx]?.[2] || '-', // 'Specification' or similar
+                quantity: qi.quantity || 1,
+                unit_price: qi.unitPrice || 0,
+                total_price: (qi.quantity || 1) * (qi.unitPrice || 0)
+            }));
+            const total = items.reduce((acc: number, i: any) => acc + i.total_price, 0);
+            setQuoteData({
+                items,
+                total_amount: total,
+                scope_of_supply: ["시스템 구축 및 현장 설치", "시운전 및 성능 검수", "담당자 사용자 교육 1회"],
+                exclusions: ["현장 토목/건축 공사", "1차 전원 간선 공사"],
+                conditions: ["계약금 30%, 중도금 40%, 잔금 30%", "납기: 발주 후 12주 이내"]
+            });
+        }
+      } else {
+        setQuoteItems([]);
+        setExtractedData(null);
+        setQuoteData(null);
+      }
+
       setIsEditing(false); // Default to read-only when project changes
     }
   }, [selectedProject]);
@@ -677,7 +774,7 @@ export default function Home() {
 
   useEffect(() => {
     if (selectedProject && activeTab === "vendor") {
-      fetch(`http://localhost:8000/api/vendors/compare/${selectedProject.id}`)
+      fetch(`http://127.0.0.1:8000/api/vendors/compare/${selectedProject.id}`)
         .then(r => r.ok ? r.json() : null)
         .then(d => setVendorData(d));
     }
@@ -704,7 +801,7 @@ export default function Home() {
     formData.append("customer", draftProject.customer_name);
     formData.append("equipment_type", draftProject.equipment_type);
     try {
-      const res = await fetch("http://localhost:8000/api/projects/upload", { method: "POST", body: formData });
+      const res = await fetch("http://127.0.0.1:8000/api/projects/upload", { method: "POST", body: formData });
       if (res.ok) {
         const data = await res.json();
         console.log("extracted_tables", data.extracted_tables);
@@ -741,8 +838,15 @@ export default function Home() {
   };
 
   const saveProject = async () => {
-    const payload = { ...draftProject, specs: draftSpecs };
-    const res = await fetch("http://localhost:8000/api/projects/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const payload = { 
+      ...draftProject, 
+      specs: { 
+        ...draftSpecs,
+        ai_extracted_data: { quoteItems, extractedData }
+      } 
+    };
+    console.log("Saving payload:", payload);
+    const res = await fetch("http://127.0.0.1:8000/api/projects/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     if (res.ok) {
       setIsQuoteModalOpen(false); setModalStep(1); setUploadedFile(null);
       setDraftProject({title: "", line_name: "", steel_grade: "", equipment_type: "", customer_id: "", customer_name: "", status: "검토중"});
@@ -757,7 +861,7 @@ export default function Home() {
     if (!projectId) return;
     if (!confirm("정말 이 프로젝트를 삭제하시겠습니까?\n삭제 후에는 복구할 수 없습니다.")) return;
     try {
-      const res = await fetch(`http://localhost:8000/api/projects/${projectId}`, { method: "DELETE" });
+      const res = await fetch(`http://127.0.0.1:8000/api/projects/${projectId}`, { method: "DELETE" });
       if (res.ok) {
         setSelectedProject(null);
         fetchProjects();
@@ -786,10 +890,11 @@ export default function Home() {
           speed: editSpeed,
           plc_type: editPlcType,
           comm_type: editCommType,
-          environment: editEnvironment
+          environment: editEnvironment,
+          ai_extracted_data: { quoteItems, extractedData }
         }
       };
-      const res = await fetch(`http://localhost:8000/api/projects/${selectedProject.id}`, {
+      const res = await fetch(`http://127.0.0.1:8000/api/projects/${selectedProject.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -822,7 +927,7 @@ export default function Home() {
         competitor_name: statusInput === "실주" ? competitorInput : null,
         winning_price: statusInput === "실주" && winningPriceInput ? parseFloat(winningPriceInput.replace(/,/g, "")) : null,
       };
-      const res = await fetch(`http://localhost:8000/api/projects/${selectedProject.id}`, {
+      const res = await fetch(`http://127.0.0.1:8000/api/projects/${selectedProject.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -854,7 +959,7 @@ export default function Home() {
     if (!phoneText.trim()) return;
     setIsSummarizing(true);
     try {
-      const res = await fetch("http://localhost:8000/api/calls/summarize", {
+      const res = await fetch("http://127.0.0.1:8000/api/calls/summarize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: phoneText }),
@@ -1377,7 +1482,7 @@ export default function Home() {
                     projects.filter(p => p.status === '검토중').map(p => (
                       <div 
                         key={p.id} 
-                        onClick={() => { setSelectedProject(p); setActiveTab("specs"); }}
+                        onClick={() => { loadProjectDetails(p); setActiveTab("specs"); }}
                         className={`p-4 rounded-xl border transition-all cursor-pointer text-left ${selectedProject?.id === p.id ? 'bg-blue-50/50 border-blue-300 ring-1 ring-blue-300' : 'bg-slate-50 hover:bg-slate-100/50 border-slate-200'}`}
                       >
                         <div className="flex justify-between items-start mb-2.5">
@@ -1389,7 +1494,7 @@ export default function Home() {
                             <button 
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setSelectedProject(p);
+                                loadProjectDetails(p);
                                 setIsEditing(true);
                               }}
                               title="수정"
@@ -1422,7 +1527,7 @@ export default function Home() {
                           <button 
                             onClick={(e) => {
                               e.stopPropagation();
-                              setSelectedProject(p);
+                              loadProjectDetails(p);
                               setCurrentView('quote_bidding');
                             }}
                             className="text-[10px] font-bold text-indigo-650 hover:text-indigo-800 flex items-center gap-0.5"
@@ -1460,7 +1565,7 @@ export default function Home() {
                     projects.map(p => (
                       <div 
                         key={p.id} 
-                        onClick={() => { setSelectedProject(p); setActiveTab("specs"); }}
+                        onClick={() => { loadProjectDetails(p); setActiveTab("specs"); }}
                         className={`p-4 rounded-xl border transition-all cursor-pointer ${selectedProject?.id === p.id ? 'bg-blue-50/50 border-blue-300 ring-1 ring-blue-300' : 'bg-slate-50 hover:bg-slate-100/50 border-slate-200'}`}
                       >
                         <div className="flex justify-between items-start mb-2">
@@ -1472,7 +1577,7 @@ export default function Home() {
                             <button 
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setSelectedProject(p);
+                                loadProjectDetails(p);
                                 setIsEditing(true);
                               }}
                               title="수정"
@@ -1758,7 +1863,7 @@ export default function Home() {
                         projects.map(p => {
                           const lowMargin = p.margin_rate !== null && p.margin_rate < 20;
                           return (
-                            <tr key={p.id} onClick={() => { setSelectedProject(p); setActiveTab("specs"); }} className={`cursor-pointer ${lowMargin ? 'bg-red-50/50 hover:bg-red-50' : 'hover:bg-blue-50'} ${selectedProject?.id === p.id ? 'bg-blue-50 ring-2 ring-inset ring-blue-500' : ''}`}>
+                            <tr key={p.id} onClick={() => { loadProjectDetails(p); setActiveTab("specs"); }} className={`cursor-pointer ${lowMargin ? 'bg-red-50/50 hover:bg-red-50' : 'hover:bg-blue-50'} ${selectedProject?.id === p.id ? 'bg-blue-50 ring-2 ring-inset ring-blue-500' : ''}`}>
                               <td className="px-6 py-4"><span className={`px-2.5 py-1 text-[10px] rounded-full border ${getStatusColor(p.status)}`}>{p.status}</span></td>
                               <td className="px-6 py-4 text-xs text-slate-600">{p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</td>
                               <td className="px-6 py-4 text-xs"><div className="font-semibold">{p.customer?.name}</div></td>
@@ -1784,7 +1889,7 @@ export default function Home() {
                                 <div className="flex items-center justify-end gap-1">
                                   <button 
                                     onClick={() => {
-                                      setSelectedProject(p);
+                                      loadProjectDetails(p);
                                       setIsEditing(true);
                                     }}
                                     title="수정"
@@ -2018,12 +2123,55 @@ export default function Home() {
                       <div className="space-y-6">
                     <div className="grid grid-cols-2 gap-4">
                       <div className="bg-white p-4 rounded-lg border">
-                        <div className="text-xs text-slate-500 mb-1">총 견적가</div>
-                        <div className="text-xl font-bold text-blue-700">₩ {selectedProject.total_amount?.toLocaleString() || '-'}</div>
+                        <div className="text-xs text-slate-500 mb-1">발주처</div>
+                        <div className="text-lg font-bold text-slate-800">{selectedProject.customer?.name || '-'}</div>
                       </div>
+                      <div className="bg-white p-4 rounded-lg border">
+                        <div className="text-xs text-slate-500 mb-1">설비 종류</div>
+                        <div className="text-lg font-bold text-slate-800">{selectedProject.equipment_type || '-'}</div>
+                      </div>
+                    </div>
+                    
+                    {quoteData && quoteData.items.length > 0 && (
+                      <div className="bg-white border rounded-lg p-5">
+                        <h3 className="font-bold border-b pb-2 mb-4 text-slate-800">사양서 리포트 (견적 내역)</h3>
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-xs text-left border-collapse border border-slate-100">
+                            <thead className="bg-slate-50">
+                              <tr>
+                                <th className="p-2 border border-slate-200">품명</th>
+                                <th className="p-2 text-center w-12 border border-slate-200">수량</th>
+                                <th className="p-2 text-right border border-slate-200">단가 (₩)</th>
+                                <th className="p-2 text-right border border-slate-200">합계 (₩)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {quoteData.items.map((it, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50">
+                                  <td className="p-2 border border-slate-200 font-bold text-slate-900">{it.name}</td>
+                                  <td className="p-2 text-center border border-slate-200">{it.quantity}</td>
+                                  <td className="p-2 text-right border border-slate-200 font-mono">{it.unit_price.toLocaleString()}</td>
+                                  <td className="p-2 text-right border border-slate-200 font-mono font-bold text-blue-700">{it.total_price.toLocaleString()}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div className="mt-4 flex justify-between items-center bg-blue-50/50 border border-blue-100 p-3 rounded-lg text-sm">
+                           <span className="font-bold text-slate-700">총 견적가 (VAT 별도)</span>
+                           <span className="font-black text-blue-700 text-lg">₩ {quoteData.total_amount.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-4">
                       <div className="bg-white p-4 rounded-lg border">
                         <div className="text-xs text-slate-500 mb-1">마진율</div>
                         <div className="text-xl font-bold">{selectedProject.margin_rate || '-'}%</div>
+                      </div>
+                      <div className="bg-white p-4 rounded-lg border">
+                        <div className="text-xs text-slate-500 mb-1">최종 투찰 금액</div>
+                        <div className="text-xl font-bold text-emerald-700">₩ {selectedProject.bid_price?.toLocaleString() || '-'}</div>
                       </div>
                     </div>
                     <div className="bg-white border rounded-lg p-5">
@@ -2286,9 +2434,30 @@ export default function Home() {
                       <span>📄 업로드된 사양서 원본 프리뷰</span>
                       <span className="text-[10px] text-slate-400">{uploadedFile?.name}</span>
                     </div>
-                    <div className="flex-1 min-h-0 bg-white rounded border border-slate-200 overflow-hidden shadow-inner">
-                      {filePreviewUrl ? (
-                        <object data={filePreviewUrl} type="application/pdf" className="w-full h-full">
+                    <div className="flex-1 min-h-0 bg-white rounded border border-slate-200 overflow-hidden shadow-inner relative">
+                      {uploadedFile?.name.toLowerCase().endsWith('.docx') && docxHtml ? (
+                        <div 
+                          id="docx-viewer"
+                          className="w-full h-full overflow-y-auto p-8 prose prose-slate max-w-none text-sm bg-white"
+                          dangerouslySetInnerHTML={{ __html: (() => {
+                            let highlightedHtml = docxHtml;
+                            if (extractedData?.extracted_tables?.length > 1) {
+                              const rows = extractedData.extracted_tables.slice(1);
+                              rows.forEach((row: any[], idx: number) => {
+                                const itemName = row[1];
+                                if (itemName && itemName !== "-") {
+                                  // Regex 이스케이프 및 안전한 문자열 치환
+                                  const escapedItemName = itemName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+                                  const regex = new RegExp(`(${escapedItemName})`, 'gi');
+                                  highlightedHtml = highlightedHtml.replace(regex, `<span id="item-highlight-${idx}" class="bg-yellow-300 text-black font-bold px-1 rounded transition-all duration-300">$1</span>`);
+                                }
+                              });
+                            }
+                            return highlightedHtml;
+                          })() }}
+                        />
+                      ) : filePreviewUrl ? (
+                        <object id="pdf-viewer" data={filePreviewUrl} type="application/pdf" className="w-full h-full scroll-smooth">
                           <div className="p-6 text-center text-slate-500 text-sm">
                             PDF 뷰어를 지원하지 않는 브라우저이거나 이미지 파일입니다.
                             <br />
@@ -2325,7 +2494,7 @@ export default function Home() {
                         <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
                         [추출된 사양서 데이터]
                       </h5>
-                      <div id="quote-builder" className="overflow-x-auto">
+                      <div id="quote-builder" key={selectedProject?.id || 'new'} className="overflow-x-auto">
                         {extractedData?.extracted_tables ? (
                           <>
                             <table className="w-full text-xs text-left border-collapse">
@@ -2349,7 +2518,29 @@ export default function Home() {
                                   return (
                                     <tr 
                                       key={rowIdx} 
-                                      onClick={() => setActiveRowIdx(rowIdx)}
+                                      data-source-ref={row[0] || (rowIdx + 1)}
+                                      onClick={() => {
+                                        setActiveRowIdx(rowIdx);
+                                        if (uploadedFile?.name.toLowerCase().endsWith('.docx')) {
+                                          const highlightEl = document.getElementById(`item-highlight-${rowIdx}`);
+                                          if (highlightEl) {
+                                            highlightEl.scrollIntoView({ behavior: "smooth", block: "center" });
+                                            highlightEl.classList.remove("bg-yellow-300");
+                                            highlightEl.classList.add("bg-orange-500", "text-white");
+                                            setTimeout(() => {
+                                              highlightEl.classList.remove("bg-orange-500", "text-white");
+                                              highlightEl.classList.add("bg-yellow-300");
+                                            }, 1000);
+                                          }
+                                        } else {
+                                          const viewer = document.getElementById("pdf-viewer");
+                                          if (viewer) {
+                                            viewer.scrollIntoView({ behavior: "smooth", block: "center" });
+                                            viewer.style.opacity = "0.7";
+                                            setTimeout(() => viewer.style.opacity = "1", 200);
+                                          }
+                                        }
+                                      }}
                                       className={`cursor-pointer transition-colors ${activeRowIdx === rowIdx ? 'bg-blue-50 ring-2 ring-blue-400' : 'hover:bg-slate-50'}`}
                                     >
                                       <td className="border border-slate-200 px-3 py-2 text-slate-600 text-center">{row[0] || (rowIdx + 1)}</td>
@@ -2357,6 +2548,7 @@ export default function Home() {
                                       <td className="border border-slate-200 px-3 py-2 text-slate-600 text-center">
                                         <input 
                                           type="number" 
+                                          min="1"
                                           className="w-16 border border-slate-200 rounded px-2 py-1 text-center focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
                                           value={quantity === 0 ? '' : quantity}
                                           onChange={(e) => {
@@ -2371,7 +2563,8 @@ export default function Home() {
                                       <td className="border border-slate-200 px-3 py-2 text-slate-600 text-right">
                                         <input 
                                           type="number" 
-                                          className="w-24 border border-slate-200 rounded px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
+                                          min="0"
+                                          className="w-24 border border-slate-200 rounded px-2 py-1 text-right focus:ring-2 focus:ring-blue-500 outline-none bg-white font-mono" 
                                           value={unitPrice === 0 ? '' : unitPrice}
                                           placeholder="0"
                                           onChange={(e) => {
@@ -2383,7 +2576,7 @@ export default function Home() {
                                           }}
                                         />
                                       </td>
-                                      <td className="border border-slate-200 px-3 py-2 text-slate-600 text-right font-bold text-blue-700">{subTotal.toLocaleString()}</td>
+                                      <td className="border border-slate-200 px-3 py-2 text-slate-600 text-right font-bold text-blue-700 font-mono">{subTotal.toLocaleString()}</td>
                                       <td className="border border-slate-200 px-3 py-2 text-slate-600">{row[3] || row[4] || "-"}</td>
                                     </tr>
                                   );
@@ -2392,10 +2585,10 @@ export default function Home() {
                               <tfoot className="bg-blue-50/50">
                                 <tr>
                                   <td colSpan={4} className="border border-slate-300 px-3 py-3 font-bold text-slate-800 text-right">총 견적 금액</td>
-                                  <td className="border border-slate-300 px-3 py-3 font-extrabold text-blue-700 text-right">
-                                    {quoteItems.reduce((acc, item, idx) => {
+                                  <td className="border border-slate-300 px-3 py-3 font-extrabold text-blue-700 text-right font-mono text-base">
+                                    ₩{quoteItems.reduce((acc, item, idx) => {
                                       const rows = extractedData.extracted_tables.length > 1 ? extractedData.extracted_tables.slice(1) : extractedData.extracted_tables;
-                                      const qty = parseInt(rows[idx]?.[2]) || item.quantity || 1;
+                                      const qty = item.quantity !== undefined ? item.quantity : (parseInt(rows[idx]?.[2]) || 1);
                                       return acc + ((item.unitPrice || 0) * qty);
                                     }, 0).toLocaleString()}
                                   </td>
@@ -2411,7 +2604,7 @@ export default function Home() {
                                     ["Item No.", "품명 및 사양", "수량", "단가(원)", "소계(원)", "비고"],
                                     ...rows.map((row: any[], idx: number) => {
                                       const qItem = quoteItems[idx] || { unitPrice: 0, quantity: 1 };
-                                      const qty = parseInt(row[2]) || qItem.quantity || 1;
+                                      const qty = qItem.quantity !== undefined ? qItem.quantity : (parseInt(row[2]) || 1);
                                       const subTotal = qty * (qItem.unitPrice || 0);
                                       return [
                                         row[0] || (idx + 1),
@@ -2424,7 +2617,7 @@ export default function Home() {
                                     }),
                                     ["", "", "", "총 견적 금액", quoteItems.reduce((acc, item, idx) => {
                                       const rows = extractedData.extracted_tables.length > 1 ? extractedData.extracted_tables.slice(1) : extractedData.extracted_tables;
-                                      const qty = parseInt(rows[idx]?.[2]) || item.quantity || 1;
+                                      const qty = item.quantity !== undefined ? item.quantity : (parseInt(rows[idx]?.[2]) || 1);
                                       return acc + ((item.unitPrice || 0) * qty);
                                     }, 0), ""]
                                   ].map(e => e.join(",")).join("\n");
@@ -2587,30 +2780,50 @@ export default function Home() {
                 </>
               )}
             </div>
-            <div className="p-5 border-t bg-white flex justify-end gap-3 shrink-0">
-              {modalStep === 1 && <button onClick={startExtraction} className="px-6 py-2 bg-blue-600 text-white font-medium rounded-md">데이터 추출 시작</button>}
-              {modalStep === 3 && (
-                <button
-                  onClick={generateQuote}
-                  disabled={riskAlerts.some(a => !a.acknowledged)}
-                  className={`px-6 py-2 bg-indigo-600 text-white font-bold rounded-md transition shadow-md ${
-                    riskAlerts.some(a => !a.acknowledged)
-                      ? "bg-slate-300 text-slate-500 cursor-not-allowed opacity-70"
-                      : "hover:bg-indigo-700"
-                  }`}
-                >
-                  견적서 자동 생성
-                </button>
-              )}
-              {modalStep === 4 && (
-                <button 
-                  onClick={saveProject} 
-                  disabled={!isVerified || (quoteItems.length > 0 && quoteItems.some(i => !i.unitPrice || i.unitPrice <= 0))}
-                  className={`px-8 py-2 font-bold rounded-md transition ${isVerified && (!quoteItems.some(i => !i.unitPrice || i.unitPrice <= 0)) ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
-                >
-                  최종 저장
-                </button>
-              )}
+            
+            {/* 하단 제어 영역 및 상태 메시지 */}
+            <div className="p-5 border-t bg-white flex justify-between items-center shrink-0">
+              <div className="text-sm font-semibold">
+                {(() => {
+                  if (modalStep === 1) return <span className="text-slate-500">사양서를 업로드하고 고객사 정보를 입력하십시오.</span>;
+                  if (modalStep === 2) return <span className="text-blue-600">AI 분석이 진행 중입니다...</span>;
+                  if (modalStep === 3 || modalStep === 4) {
+                    const rows = extractedData?.extracted_tables?.length > 1 ? extractedData.extracted_tables.slice(1) : (extractedData?.extracted_tables || []);
+                    const isAllPricesValid = rows.length > 0 && quoteItems.length >= rows.length && rows.every((_, idx) => (quoteItems[idx]?.unitPrice || 0) > 0);
+                    
+                    if (isAllPricesValid) {
+                      return <span className="text-emerald-600 flex items-center gap-1"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7"/></svg> 모든 검증이 완료되었습니다. [최종 저장]을 눌러 데이터베이스에 반영하십시오.</span>;
+                    } else {
+                      return <span className="text-blue-600 flex items-center gap-1"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> 품목별 단가를 입력해주십시오. 총액이 계산되면 '최종 저장'이 활성화됩니다.</span>;
+                    }
+                  }
+                  return null;
+                })()}
+              </div>
+              <div className="flex gap-3">
+                {modalStep === 1 && <button onClick={startExtraction} className="px-6 py-2 bg-blue-600 text-white font-medium rounded-md">데이터 추출 시작</button>}
+                {(modalStep === 3 || modalStep === 4) && (
+                  <button 
+                    onClick={saveProject} 
+                    disabled={
+                      (() => {
+                        const rows = extractedData?.extracted_tables?.length > 1 ? extractedData.extracted_tables.slice(1) : (extractedData?.extracted_tables || []);
+                        const isAllPricesValid = rows.length > 0 && quoteItems.length >= rows.length && rows.every((_, idx) => (quoteItems[idx]?.unitPrice || 0) > 0);
+                        return !isAllPricesValid;
+                      })()
+                    }
+                    className={`px-8 py-2 font-bold rounded-md transition ${
+                      (() => {
+                        const rows = extractedData?.extracted_tables?.length > 1 ? extractedData.extracted_tables.slice(1) : (extractedData?.extracted_tables || []);
+                        const isAllPricesValid = rows.length > 0 && quoteItems.length >= rows.length && rows.every((_, idx) => (quoteItems[idx]?.unitPrice || 0) > 0);
+                        return isAllPricesValid ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md' : 'bg-slate-300 text-slate-500 cursor-not-allowed';
+                      })()
+                    }`}
+                  >
+                    최종 저장
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

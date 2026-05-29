@@ -58,7 +58,7 @@ def startup_event():
 # Enable CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3001", "http://127.0.0.1:3001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -264,12 +264,14 @@ def create_project(project: schemas.ProjectCreate, db: Session = Depends(get_db)
     db.refresh(db_project)
     
     if project.specs:
+        print("[DEBUG] Received specs.ai_extracted_data:", project.specs.ai_extracted_data)
         db_spec = models.ProjectSpec(
             project_id=db_project.id,
             speed=project.specs.speed,
             plc_type=project.specs.plc_type,
             comm_type=project.specs.comm_type,
-            environment=project.specs.environment
+            environment=project.specs.environment,
+            ai_extracted_data=project.specs.ai_extracted_data
         )
         db.add(db_spec)
         db.commit()
@@ -406,6 +408,16 @@ def get_vendor_comparison(project_id: str):
 def get_equipment_types(db: Session = Depends(get_db)):
     types = db.query(models.Project.equipment_type).distinct().all()
     return [t[0] for t in types if t[0]]
+
+@app.get("/api/projects/{project_id}", response_model=schemas.ProjectResponse)
+def get_project(project_id: str, db: Session = Depends(get_db)):
+    project = db.query(models.Project).options(
+        joinedload(models.Project.customer),
+        joinedload(models.Project.specs)
+    ).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
 
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: str, db: Session = Depends(get_db)):
